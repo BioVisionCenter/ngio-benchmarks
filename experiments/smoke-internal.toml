@@ -1,0 +1,23 @@
+# The smallest run that exercises every internal block. Seconds, not minutes.
+#
+#   uv run ngio-bench-internal experiments/smoke-internal.toml --list
+#   uv run ngio-bench-internal experiments/smoke-internal.toml
+
+repeats = 1
+warmup = 0
+
+[axes.consolidate]
+mode = ["dask", "numpy"]
+z = [16]
+
+[axes.layout]
+layout = ["chunks512", "sharded"]
+z = [16]
+
+[axes.roi]
+alignment = ["aligned", "straddling"]
+size = [512]
+
+[axes.algorithms]
+kernel = ["overlap", "roi_table"]
+n = [256, 1000]

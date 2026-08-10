@@ -1,0 +1,98 @@
+# https://peps.python.org/pep-0517/
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# Flat layout, deliberately. A comparison child runs
+# `python -m ngio_benchmarks._child` with cwd set to this directory, so the
+# package imports from sys.path[0] *without being installed* -- which is what
+# keeps a child's environment holding exactly the library under test and
+# nothing else. See `ngio_benchmarks/core/envs.py`.
+packages = ["ngio_benchmarks"]
+
+[project]
+name = "ngio-benchmarks"
+version = "0.1.0"
+description = "Performance measurement for ngio, and comparison against other OME-Zarr and chunked-array libraries"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "BSD-3-Clause" }
+authors = [{ name = "Lorenzo Cerrone", email = "lorenzo.cerrone@uzh.ch" }]
+
+# The runner itself is stdlib, numpy, and zarr. Everything measured arrives
+# either from the `internal` extra (for the in-process default) or from an
+# isolated `uv run` environment described by a config file. Keeping this list
+# short is not tidiness: `_child.py` and everything it imports must be
+# satisfiable inside a peer library's environment, where ngio is deliberately
+# absent.
+#
+# zarr is here because the parent writes the `compare-io` read fixture itself,
+# with hand-written NGFF metadata. That keeps the bytes every implementation
+# reads from having been produced by one of the contestants, and it keeps a
+# tensorstore-only child from having to carry zarr-python purely for setup.
+dependencies = ["numpy>=2.0", "zarr>=3.1.6"]
+
+[project.optional-dependencies]
+# What the `internal` suite measures. Needed only for the in-process default;
+# a config that declares `[[environments]]` supplies its own ngio.
+internal = ["ngio>=1.0"]
+
+# There is deliberately no `compare` extra listing the peer libraries.
+#
+# It was tried, as a convenience for poking at an adapter in a REPL, and it
+# does not resolve: `ome-zarr` requires Python >3.11 and `iohub` requires
+# >=3.12, so a single environment holding both cannot exist across the range
+# ngio itself supports. That is the premise of this whole design rather than an
+# obstacle to it -- every comparison implementation gets its own environment,
+# and an extra that claimed otherwise would only be a resolution failure
+# waiting for someone to hit it. To experiment with one adapter by hand, use
+# the same command the runner does:
+#
+#   uv run --no-project --with 'ome-zarr>=0.18' python
+#
+# The pins live on each adapter's `REQUIRES`, which is the single source.
+
+dev = ["ruff", "pytest"]
+
+[project.urls]
+repository = "https://github.com/BioVisionCenter/ngio-benchmarks"
+
+# One console script per suite. There is no shared `ngio-bench` dispatcher on
+# purpose: the three suites take different config schemas, and a single
+# `--help` listing keys that are valid for only one of them is how a config
+# file gets written that silently does nothing.
+[project.scripts]
+ngio-bench-internal = "ngio_benchmarks.internal._cli:main"
+ngio-bench-compare-io = "ngio_benchmarks.compare.io._cli:main"
+ngio-bench-compare-create = "ngio_benchmarks.compare.create._cli:main"
+
+# https://docs.astral.sh/ruff
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",    # style errors
+    "W",    # style warnings
+    "F",    # flakes
+    "D",    # pydocstyle
+    "I",    # isort
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "B",    # flake8-bugbear
+    "A001", # flake8-builtins
+    "RUF",  # ruff-specific rules
+    "TC",   # flake8-type-checking
+    "TID",  # flake8-tidy-imports
+]
+ignore = [
+    "D401", # First line should be in imperative mood
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+docstring-code-format = true

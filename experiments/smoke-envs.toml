@@ -1,0 +1,34 @@
+# Exercises all three ways of naming an ngio, plus a deliberately broken entry.
+#
+# The fourth environment cannot install. It is here on purpose: the run must
+# report it and carry on, because a comparison that aborts on its last column
+# throws away the three that worked.
+#
+#   uv run ngio-bench-internal experiments/smoke-envs.toml --list
+#   uv run ngio-bench-internal experiments/smoke-envs.toml
+
+blocks = ["roi"]
+repeats = 1
+warmup = 0
+
+[[environments]]
+name = "worktree"
+# Relative to THIS FILE, like `csv` — so `../..` is the project root and
+# `../../ngio` is a checkout sitting beside it.
+ngio = "local:../../ngio"
+
+[[environments]]
+name = "pypi"
+ngio = "1.0.0"
+
+[[environments]]
+name = "main"
+ngio = "git+https://github.com/BioVisionCenter/ngio@main"
+
+[[environments]]
+name = "broken"
+ngio = "99.99.99"
+
+[axes.roi]
+alignment = ["aligned", "straddling"]
+size = [512]

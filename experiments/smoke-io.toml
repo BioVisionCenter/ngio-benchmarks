@@ -1,0 +1,10 @@
+# Every implementation, every operation, on the smallest image. Exists to prove
+# the matrix works end to end, not to produce numbers worth reading.
+#
+#   uv run ngio-bench-compare-io experiments/smoke-io.toml --list
+#   uv run ngio-bench-compare-io experiments/smoke-io.toml
+
+repeats = 1
+warmup = 0
+
+image = ["small"]

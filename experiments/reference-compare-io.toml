@@ -1,0 +1,135 @@
+# Every key `ngio-bench-compare-io` understands, with its default.
+#
+# Copy this file and uncomment what you need. **Every key is optional**, so as
+# shipped — with everything commented out — this is exactly equivalent to the
+# defaults.
+#
+#   uv run ngio-bench-compare-io experiments/reference-compare-io.toml --list
+#
+# Run `--list` before any real sweep. Every implementation is installed into
+# its own isolated environment before the first measurement, so a config that
+# selects nothing is expensive to discover any later than the dry run.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- the three axes --------------------------------------------------------
+#
+# A **singular** key is an axis and holds a list of labels; a **plural** table
+# defines what those labels mean. `image` selects, `[images.<name>]` defines;
+# `impl` selects, `[env.<impl>]` pins.
+
+# Which implementations to compare. Default: all of them.
+#
+#   ngio          open_image / get_as_numpy / set_array
+#   zarr          zarr-python directly — the floor every other row is read against
+#   zarrs         the same code under the zarrs (Rust) codec pipeline
+#   dask          da.from_array / da.store, .compute() inside the timing
+#   tensorstore   the same bytes decoded outside Python — a ceiling, not a peer
+#   z5py          a C++ zarr/n5 implementation with an h5py-shaped API
+#   acquire-zarr  write-only, streaming; supports `write_full` and nothing else
+#
+# impl = ["ngio", "zarr", "zarrs", "dask", "tensorstore", "z5py", "acquire-zarr"]
+
+# Which operations to measure. Default: all six.
+#
+# The aligned/straddling pair is the read-amplification question: a region
+# inside chunk boundaries touches the minimum number of chunks, and the same
+# region offset by half a chunk fetches and discards every chunk on each edge.
+# The ratio between the two columns is what that costs.
+#
+# op = [
+#   "read_full", "read_roi_aligned", "read_roi_straddling",
+#   "write_full", "write_roi_aligned", "write_roi_straddling",
+# ]
+
+# Which images to sweep. Default: ["medium"].
+# Built-in names: small, medium, large, chunks64, chunks512, sharded,
+# uncompressed, v2. Add your own with an [images.<name>] table below.
+# image = ["medium"]
+
+# --- measurement -----------------------------------------------------------
+
+# Timed runs per case. Default: 5.
+# repeats = 5
+
+# Untimed runs before the timed ones. Default: 1.
+#
+# Note that `warmup + repeats` is NOT how many times a case actually runs. Each
+# case is executed warmup times, then `repeats` times for the timing, then once
+# or twice more with `tracemalloc` on -- timing and allocation are measured in
+# separate phases because tracemalloc inflates allocation-heavy code and would
+# otherwise report a time that is not the time. `--list` prints the real
+# `runs/case`, which is what to check before a long sweep.
+# Reads additionally get one untimed call for the checksum column, so a read is
+# never timed completely cold even at `warmup = 0`. Writes do not.
+# warmup = 1
+
+# --- output ----------------------------------------------------------------
+
+# Append results to this CSV. Default: none — print the table only.
+# Relative to THIS FILE. Files under experiments/ ending in .csv are gitignored.
+# csv = "reference-compare-io.csv"
+
+# Reuse and keep generated fixtures in .data/ instead of a temp dir.
+# Worth setting for a long sweep: the read fixture is written once by the
+# parent and shared by every implementation, so keeping it saves rebuilding it
+# on the next run. Default: false.
+# keep = false
+
+# Suppress each environment's install output. Default: false.
+# quiet = false
+
+
+# ===========================================================================
+# Environments — one per implementation, always
+# ===========================================================================
+#
+# Each implementation runs in its own `uv` environment. That is unconditional
+# rather than a fallback: `iohub` needs Python >=3.12 while ngio supports 3.11,
+# `ome-zarr` needs >3.11, and the peers pin overlapping dependency ranges that
+# intersect only narrowly. There is no single environment all of them install
+# into, and a suite that measured whichever subset happened to co-install today
+# would quietly shrink every time one of them released.
+#
+# By default each implementation installs what its adapter declares. An
+# [env.<impl>] table replaces those pins entirely, which is how a committed
+# config names the exact peer version its numbers came from rather than
+# "whatever resolved the day it ran".
+#
+# `requires` takes the same three forms `ngio` does in the internal suite:
+# a PEP 508 requirement, a `git+` URL, or `local:` a checkout (relative to THIS
+# FILE) installed editable.
+
+# [env.ngio]
+# requires = ["local:../../ngio"]        # measure the working tree
+# requires = ["ngio==1.0.0"]             # or a release
+
+# [env.tensorstore]
+# requires = ["tensorstore==0.1.85", "numpy>=2"]
+# python = "3.12"                        # overrides the adapter's pin
+
+
+# ===========================================================================
+# Images — extend the named registry the `image` axis draws from
+# ===========================================================================
+#
+# `image` is a closed axis; this table adds a value to the registry it draws
+# from. See reference-internal.toml for the full field list.
+#
+# Two fields matter more here than elsewhere. `zarr_format` decides who can
+# take part at all — `zarrs` is a zarr v3 codec pipeline and has no v2
+# equivalent, and `acquire-zarr` 0.8 dropped v2. And `shards` excludes `z5py`,
+# which does not implement v3 sharding. Those cases are reported `unsupported`
+# rather than left blank.
+
+# [images.my_plate]
+# shape       = [1, 64, 2048, 2048]
+# chunks      = [1, 1, 256, 256]
+# shards      = [1, 8, 1024, 1024]
+# dtype       = "uint16"
+# compressors = "auto"
+# zarr_format = 3
+# roi_size    = 512

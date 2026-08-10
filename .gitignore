@@ -1,0 +1,14 @@
+# Results are machine-dependent; the recipe is the committable artefact.
+# The .toml files under experiments/ are tracked, the CSVs they produce are not.
+experiments/**/*.csv
+
+# Generated fixtures under `keep = true`.
+.data/
+
+# Python / uv
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ruff_cache/
+.pytest_cache/

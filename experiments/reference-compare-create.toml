@@ -1,0 +1,119 @@
+# Every key `ngio-bench-compare-create` understands, with its default.
+#
+# Copy this file and uncomment what you need. **Every key is optional**, so as
+# shipped — with everything commented out — this is exactly equivalent to the
+# defaults.
+#
+#   uv run ngio-bench-compare-create experiments/reference-compare-create.toml --list
+#
+# Run `--list` before any real sweep: six environments install before the first
+# measurement.
+#
+# Read this suite's output with the `pyramid`, `level_shapes`, `bytes` and
+# `downsample` columns in hand, not the timing alone. These libraries disagree
+# about the downsampling filter, the default chunking, and which metadata they
+# write, so a writer that finished first may not have written the same
+# artefact. Those columns are read back off disk rather than taken from what
+# the writer was asked for, precisely so a writer that quietly produced
+# something smaller does not look fast.
+#
+# `pyramid` is the one to check first. It says `as asked` when the level shapes
+# match what the image spec requested, and spells out the divergence when they
+# do not. Left to their own defaults these writers build three *different*
+# pyramids — ngio, ome-zarr-py and bioio halve xy only, while ngff-zarr and
+# iohub also halve z and so write half the voxels at every level. All five are
+# now pinned to the spec's `downsample` (see [images.<name>] below), which is
+# what makes the timings comparable at all. `acquire-zarr` cannot be pinned —
+# its streaming writer exposes the filter and the depth but not the axes — so
+# it reports `differs` and prints the shapes it really wrote.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- the two axes ----------------------------------------------------------
+
+# Which writers to compare. Default: all of them.
+#
+#   ngio          create_empty_ome_zarr + set_array + consolidate
+#   ngff-zarr     to_ngff_image / to_multiscales / to_ngff_zarr (itkwasm filter)
+#   ome-zarr-py   write_image — the OME project's own writer
+#   bioio         OMEZarrWriter, told explicit per-level shapes
+#   iohub         an HCS-shaped writer, measured on a single position; py>=3.12
+#   acquire-zarr  streams frames, building the pyramid during acquisition; v3 only
+#
+# impl = ["ngio", "ngff-zarr", "ome-zarr-py", "bioio", "iohub", "acquire-zarr"]
+
+# Which images to build a pyramid from. Default: ["medium"].
+# The spec's `levels` is how many resolution levels are requested; `chunks`,
+# `shards` and `compressors` are passed to each writer where it accepts them.
+image = ["small"] #, "large"]
+
+# The single operation, present so both comparison suites share a runner.
+# op = ["create_pyramid"]
+
+# --- measurement -----------------------------------------------------------
+
+# Timed runs per case. Default: 3, since building a pyramid is not cheap.
+repeats = 1
+
+# Untimed runs before the timed ones. Default: 1.
+#
+# Note that `warmup + repeats` is NOT how many times a case actually runs. Each
+# case is executed warmup times, then `repeats` times for the timing, then once
+# or twice more with `tracemalloc` on -- timing and allocation are measured in
+# separate phases because tracemalloc inflates allocation-heavy code and would
+# otherwise report a time that is not the time. `--list` prints the real
+# `runs/case`, which is what to check before a long sweep.
+warmup = 0
+
+# --- output ----------------------------------------------------------------
+
+# Append results to this CSV. Default: none — print the table only.
+# Relative to THIS FILE. Files under experiments/ ending in .csv are gitignored.
+csv = "reference-compare-create.csv"
+
+# Reuse and keep the generated source pixels in .data/. Default: false.
+keep = true
+
+# Suppress each environment's install output. Default: false.
+# quiet = false
+
+
+# ===========================================================================
+# Environments — one per writer, always
+# ===========================================================================
+#
+# See reference-compare-io.toml for why this is unconditional. An [env.<impl>]
+# table replaces that writer's default pins entirely.
+
+# [env.ngio]
+# requires = ["local:../../ngio"]
+
+# [env.ome-zarr-py]
+# requires = ["ome-zarr==0.18.0"]
+
+
+# ===========================================================================
+# Images — extend the named registry the `image` axis draws from
+# ===========================================================================
+#
+# See reference-internal.toml for the full field list. Two fields are what this
+# suite is really about:
+#
+#   levels      how many resolution levels to build
+#   downsample  which axes are halved at each level; default ["y", "x"]
+#
+# `downsample` is the setting that makes the columns comparable. Every writer
+# except acquire-zarr is pinned to it, so changing it here changes the pyramid
+# all of them build, and the `pyramid` column confirms each one complied.
+# Only spatial axes (z, y, x) may be named. The factor is fixed at 2 per level,
+# because several of these writers can express nothing else.
+
+# [images.deep_pyramid]
+# shape       = [1, 64, 2048, 2048]
+# chunks      = [1, 1, 256, 256]
+# levels      = 6
+# downsample  = ["y", "x"]            # or ["z", "y", "x"] for isotropic
+# zarr_format = 3

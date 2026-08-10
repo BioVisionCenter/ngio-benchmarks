@@ -1,0 +1,10 @@
+# Every OME-Zarr writer, on the smallest image. Proves the matrix works and
+# that each writer produced the pyramid it was asked for; not a measurement.
+#
+#   uv run ngio-bench-compare-create experiments/smoke-create.toml --list
+#   uv run ngio-bench-compare-create experiments/smoke-create.toml
+
+repeats = 1
+warmup = 0
+
+image = ["small"]

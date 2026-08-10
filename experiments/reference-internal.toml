@@ -1,0 +1,173 @@
+# Every key `ngio-bench-internal` understands, with its default.
+#
+# Copy this file and uncomment what you need. **Every key is optional**, so as
+# shipped — with everything commented out — this file is exactly equivalent to
+# the defaults. That is deliberate: it is a template, not an experiment.
+#
+#   uv run ngio-bench-internal experiments/reference-internal.toml --list
+#
+# There are no command-line settings to override any of this. An invocation is
+# an experiment, and an experiment that lives only in shell history cannot be
+# committed next to the CSV it produced, diffed against last month's, or pasted
+# into an issue. The file is the experiment; `--list` is the dry run.
+#
+# Note the ordering below: every plain setting comes before the first [table].
+# TOML binds a bare key to whichever table precedes it, so a `repeats`
+# uncommented below an [axes.consolidate] header would become an *axis* named
+# `repeats` rather than a setting. Keep new keys above the tables.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- selection -------------------------------------------------------------
+
+# Which blocks to run. Default: all of them. An unknown name is an error.
+# blocks = ["algorithms", "consolidate", "layout", "roi"]
+
+# --- measurement -----------------------------------------------------------
+
+# Timed runs per case. Default: whatever the block declares — 3 for
+# `algorithms`, `consolidate` and `layout`, 5 for `roi`. Set here to force one
+# number across every block.
+# repeats = 5
+
+# Untimed runs before the timed ones. Default: 1.
+#
+# Note that `warmup + repeats` is NOT how many times a case actually runs. Each
+# case is executed warmup times, then `repeats` times for the timing, then once
+# or twice more with `tracemalloc` on -- timing and allocation are measured in
+# separate phases because tracemalloc inflates allocation-heavy code and would
+# otherwise report a time that is not the time. `--list` prints the real
+# `runs/case`, which is what to check before a long sweep.
+# Zero is valid and means no warmup — but at `repeats = 1` with no warmup the
+# first call carries every one-off cost the library has, and the numbers are
+# not comparable with anything.
+# warmup = 1
+
+# --- output ----------------------------------------------------------------
+
+# Append results to this CSV. Default: none — print the table only.
+# A relative path resolves against THIS FILE, not the working directory, so a
+# committed experiment writes its results beside itself wherever it is run
+# from. Files under experiments/ ending in .csv are gitignored: the recipe is
+# the committable artefact, the numbers are machine-dependent.
+# A file whose header does not match is an error, not an append.
+# csv = "reference-internal.csv"
+
+# Reuse and keep generated fixtures in .data/ instead of a temp dir.
+# Default: false. Fixture names derive from their spec, so blocks needing the
+# same image share one store. Ignored when `[[environments]]` is set: a fixture
+# written by one ngio and read back by another is a different experiment from
+# the one that was asked for, so every environment gets its own temp root.
+# keep = false
+
+# Suppress the per-run table; results still reach `csv`. Default: false.
+# quiet = false
+
+
+# ===========================================================================
+# Environments — omit entirely to measure in the current interpreter
+# ===========================================================================
+#
+# Each [[environments]] entry is installed into its own isolated `uv`
+# environment and measured separately; the output is one column per entry with
+# a ratio against the first. Needs `uv` on PATH. An entry that fails to install
+# is reported and skipped rather than aborting the rest, and its cases render
+# as `—`.
+#
+# `ngio` accepts three forms, because those are the three places a version
+# anyone wants to measure actually lives:
+#
+#   "1.0.0"                                 that release from PyPI
+#   "git+https://.../ngio@main"             that git ref
+#   "local:../../ngio"                      that checkout, installed editable
+#                                           (relative to THIS FILE, like `csv`)
+#
+# `with` pins anything else. Being able to pin more than ngio is the point:
+# installing an older ngio also resolves *its* zarr, so a difference between
+# versions can come from zarr instead, and pinning both is the only way to
+# tell. The CSV records the resolved `ngio_version` and `zarr` on every row for
+# the same reason — check those columns before concluding anything about an
+# ngio change.
+
+# [[environments]]
+# name = "worktree"              # optional label; defaults to a rendering of the spec
+# ngio = "local:../../ngio"
+
+# [[environments]]
+# name = "released"
+# ngio = "1.0.0"
+# with = ["zarr==3.1.6"]         # pin ngio's dependencies too
+# python = "3.12"                # optional interpreter pin
+
+
+# ===========================================================================
+# Images — extend the named registry the `image` axis draws from
+# ===========================================================================
+#
+# The built-in names are: small, medium, large, chunks64, chunks512, sharded,
+# uncompressed, v2. An entry here adds a name, or replaces a built-in one.
+#
+# This is not a second way to declare an axis: `image` is a closed axis a block
+# declares, and this table only adds a value to the registry it draws from. The
+# distinction matters because a spec is a bundle of interdependent settings —
+# shards imply zarr v3, a shard shape must be a whole number of chunks — and a
+# bundle wants validating once, by name, rather than at every use site.
+
+# [images.my_plate]
+# shape       = [1, 64, 2048, 2048]   # required; 2 to 5 axes
+# chunks      = [1, 1, 256, 256]      # required; must match `shape`'s rank
+# shards      = [1, 8, 1024, 1024]    # optional; needs zarr_format 3
+# dtype       = "uint16"              # uint8/int8/uint16/int16/uint32/float32
+# compressors = "auto"                # auto/none/zstd/blosc/lz4
+# zarr_format = 3                     # 2 (NGFF 0.4) or 3 (NGFF 0.5)
+# levels      = 5                     # pyramid levels
+# downsample  = ["y", "x"]            # axes halved per level; or ["z","y","x"]
+# axes_names  = ["c", "z", "y", "x"]  # defaults from the rank
+# pixelsize   = [0.65, 0.65]          # [y, x] in micrometers
+# roi_size    = 512                   # edge length of the region ops read
+# seed        = 0                     # the synthetic data is seeded
+
+
+# ===========================================================================
+# Axes — everything below here is inside a table; keep settings above
+# ===========================================================================
+#
+# An axis *replaces* the block's declared values; it never extends them. A
+# config can only replace an axis a block already declares — it cannot invent
+# one, which is what keeps the blocks the single source of truth.
+#
+# One [axes.<block>] table per block, whose keys are that block's axes. Every
+# entry names its block, on purpose: a bare `z` meaning "whichever blocks
+# happen to have one" describes the suite at the moment the file was written
+# rather than the experiment, and a file is read later by someone who was not
+# there. Two blocks needing the same value get one entry each.
+#
+# Two axis kinds, and the block's declaration decides which:
+#   open   — values are scalars; you may name values that were never declared
+#   closed — values are structures; you may only subset the declared labels
+#
+# `--list` prints every axis with its kind and the values it would sweep.
+
+# Pyramid consolidation: which mode should I use, and will it fit?
+# [axes.consolidate]
+# mode = ["dask", "numpy", "coarsen"]   # [open]  which consolidation mode
+# z = [16, 64, 256]                     # [open]  z-depth; 256 is ~128 MB
+
+# Same bytes, different on-disk layout.
+# [axes.layout]
+# layout = ["chunks512", "chunks128", "sharded", "uncompressed"]  # [closed]
+# z = [16]                              # [open]  z-depth of the test image
+
+# Chunk-aligned versus straddling ROI reads.
+# [axes.roi]
+# alignment = ["aligned", "straddling"]  # [closed] offset relative to chunks
+# size = [512]                           # [open]  ROI edge length in pixels
+
+# Scaling curves for ngio's own algorithms. Cases outside a kernel's useful
+# range are skipped and counted, not silently dropped.
+# [axes.algorithms]
+# kernel = ["overlap", "masking_roi", "roi_table"]   # [open]
+# n = [64, 256, 1024, 2048, 4096, 10000, 50000]      # [open]
