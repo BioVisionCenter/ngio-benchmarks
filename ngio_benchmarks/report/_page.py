@@ -40,7 +40,7 @@ def _embed(payload: dict) -> str:
 
 def render(report: Report, source: str) -> str:
     """The whole page, as one string."""
-    title = f"ngio benchmarks -- {source}"
+    title = f"ngio benchmarks · {report.profile['suite']} -- {source}"
     return f"""<!doctype html>
 <html lang="en">
 <head>

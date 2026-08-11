@@ -668,47 +668,70 @@ is the committable artefact; the numbers are machine-dependent.
 
 Past a couple of dozen rows the table stops being how anyone reads a run.
 `reference-compare-create.csv` is 88 rows across six writers, two images and
-four filters, a third of them `unsupported`, so there is a second reader:
+four filters, a third of them `unsupported`; a `compare-io` sweep is six
+operations deep across seven libraries. So each suite has a second reader:
 
 ```
-uv run ngio-bench-report-create experiments/reference-compare-create.csv
+uv run ngio-bench-report-internal       experiments/reference-internal.csv
+uv run ngio-bench-report-compare-io     experiments/reference-compare-io.csv
+uv run ngio-bench-report-compare-create experiments/reference-compare-create.csv
 ```
 
-That writes `experiments/reference-compare-create.html` — one self-contained
-file, no network, no dependencies beyond what the runner already needs. Pass
-`-o` for a different path or `--open` to launch it. It is gitignored for the
-same reason the CSV is.
+Each writes the CSV's path with `.html` — one self-contained file, no network,
+no dependencies beyond what the runner already needs. Pass `-o` for a different
+path or `--open` to launch it. They are gitignored for the same reason the CSVs
+are.
+
+One command per suite rather than one that sniffs the header, for the same
+reason there is one runner per suite: each command's `check_csv` refuses the
+other two at the door rather than half-rendering one of them. Underneath they
+are one engine and three profiles (`ngio_benchmarks/report/_profile.py`), so
+the three pages read as one family and a fix to any of it reaches all three.
 
 Three views, one filter row scoping all of them:
 
 * **Timing** — median wall-clock, faceted and grouped, with min/max whiskers
   where `repeats > 1`. Linear bars or a log dot plot; absolute or a ratio
   against a baseline you pick.
-* **Coverage** — implementation against filter, showing all four of `ok`,
+* **Coverage** — series against group, showing all four of `ok`,
   `unsupported`, `unavailable` and `failed`, with the adapter's own reason on
   hover. This is where the capability gaps read at a glance.
-* **Memory & CPU** — peak RSS split into what importing the library cost and
-  what the case cost on top, plus `cpu/wall` against a single-threaded rule.
+* **Memory & CPU** — for the comparison suites, peak RSS split into what
+  importing the library cost and what the case cost on top; for `internal`,
+  which takes no per-case baseline, tracemalloc's own figure. Both carry
+  `cpu/wall` against a single-threaded rule.
 
-**The audit columns are drawn on the charts, not left in a column.** A bar
-whose `pyramid` differs from the one requested is hatched and marked `≠`,
-because a writer that finished first while writing something else has not won
-anything. `acquire-zarr` is the fastest row in the reference file and every one
-of its bars carries that mark.
+**The audit column is drawn on the charts, not left in a column.** For
+`compare-create` that is `pyramid`: a bar that built something other than what
+was asked for is hatched and marked `≠`, because a writer that finished first
+while writing something else has not won anything — `acquire-zarr` is the
+fastest row in the reference file and every one of its bars carries that mark.
+For `compare-io` it is `checksum`: every read in one cell opens the same store,
+so a digest the rest of the cell did not agree on means that row read different
+bytes, and it is hatched the same way. Majority rather than "matches ngio", so
+ngio being the odd one out is reportable; writes carry no checksum and are
+never marked. `internal` has no audit column — it measures one library against
+itself, so there is no claim that two bars built the same thing to check.
 
-The report takes the **schema**, not this one file. It works out which of the
-ten `AXIS_FIELDS` a CSV actually varies along and offers them as facet, group
-and series pickers, so a config sweeping `max_threads` or `writer` charts
-without a code change; an axis with one value simply drops a level of nesting.
-It understands `compare-create` only — `compare-io` and `internal` write
-different columns and are refused at the door rather than half-rendered.
+Each report takes the **schema**, not one file. It works out which columns a
+CSV actually varies along and offers them as facet, group and series pickers,
+so a `compare-create` config sweeping `max_threads` or `writer` charts without
+a code change, and an axis with one value simply drops a level of nesting. The
+defaults differ per suite because the questions do: `compare-io` facets by
+operation, since a full-level read and a straddling ROI write differ by orders
+of magnitude and one shared scale would render the fast ones as slivers;
+`internal` facets by block and takes no group axis, because its four blocks
+sweep disjoint axes and any global group would caption three cards in four with
+a value they do not have.
 
-Colour names the implementation and nothing else, assigned by name so filtering
-never repaints the survivors. Six hues cannot all stay separable under
-simulated dichromacy inside the lightness bands both themes need, so colour is
-deliberately a supporting channel: every bar is directly labelled, every chart
-has a table view, and a texture toggle carries identity with 45°/135° hatching
-for readers who need it without hue.
+Colour names the series — the implementation, or the environment — and nothing
+else, assigned by name so filtering never repaints the survivors. Seven hues
+cannot all stay separable under simulated dichromacy inside the lightness bands
+both themes need, so colour is deliberately a supporting channel: every bar is
+directly labelled, every chart has a table view, and a texture toggle carries
+identity with 45°/135° hatching for readers who need it without hue. An
+`internal` file with no `[[environments]]` has one series and therefore one
+colour throughout, and the legend says so rather than printing a one-item key.
 
 ## Adding to it
 

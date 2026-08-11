@@ -1,29 +1,46 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   ngio benchmarks — compare-create report
+   ngio benchmarks — the report page, for all three suites
 
    Colours are ngio's own tokens. The one rule from that system holds here too:
    fill tokens and text tokens are separate, and a series colour never becomes
    text. Bars wear the series colour; every label beside them wears ink.
 
    ── The series palette ────────────────────────────────────────────────────
-   Six implementations, six hues, ngio's brand teal first. Slot order is fixed
-   by the implementation name, never by rank, so hiding a series in the filter
-   row never repaints the survivors.
+   Numbered slots, ngio's brand teal first. The stylesheet no longer knows any
+   library's name: `_model.colours` assigns a slot per series *by name* against
+   the profile's pinned order, so ngio is slot 0 in every comparison file, a
+   config selecting two writers gets the same two hues it would have got
+   selecting six, and hiding a series in the filter row never repaints the
+   survivors. An environment a config named itself — `internal` has no names to
+   pin — takes the lowest free slot in declaration order.
 
-   Measured against the surfaces below (OKLab ΔE ×100, Machado severity 1.0):
+   Slots 0–5 are the six hues this page shipped with, at their original values
+   and in their original order. Slot 6 was added for `compare-io`, which fields
+   seven implementations, and was chosen by searching the lightness band the
+   others occupy for the colour furthest from all of them — under normal vision
+   and under simulated protanopia and deuteranopia at once. Measured the same
+   way as the original six (OKLab ΔE ×100, Machado severity 1.0):
 
-     adjacent pairs   CVD ΔE 14.2 light / 14.0 dark   (target ≥ 8)
      adjacent pairs   normal ΔE 24.4 light / 18.1 dark (floor ≥ 15)
-     contrast         all six ≥ 3:1 in both modes
+     adjacent pairs   CVD ΔE 15.6 light / 15.7 dark    (target ≥ 8)
+     all pairs        normal ΔE  8.1 light / 11.9 dark
+     contrast         all seven ≥ 3.58:1 light, 3.64:1 dark
+
+   Those all-pairs figures are unchanged by slot 6: it is far enough from the
+   other six that it lowers no floor. **There is no slot 7.** The search found
+   nothing that could be added without dragging the dark all-pairs worst below
+   11.9, so nothing was added — an eighth series falls through to `--s-other`
+   and carries its identity by label and texture instead. That is the honest
+   outcome rather than eight hues that only look like eight.
 
    The filter row can hide any subset, so two slots that are not neighbours
    here can end up neighbours on screen; across ALL pairs the worst is
-   blue↔violet, which collapses under deutan. Six hues that separate under
+   blue↔violet, which collapses under deutan. Seven hues that separate under
    simulated dichromacy do not exist inside these lightness bands — so colour
    is deliberately a *supporting* channel throughout: every bar is directly
-   labelled with its implementation, the legend is always present, each chart
-   has a table view, and the texture toggle turns on 45°/135° hatching for
-   readers who need identity carried without hue at all.
+   labelled with its series, the legend is always present, each chart has a
+   table view, and the texture toggle turns on 45°/135° hatching for readers
+   who need identity carried without hue at all.
    ══════════════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -50,13 +67,14 @@
   --line-strong: #cfd4d4;
   --grid: #e9ecec;
 
-  /* ── series: one hue per implementation ── */
-  --s-ngio: #0c9488;
-  --s-ngff-zarr: #d25117;
-  --s-ome-zarr-py: #3280de;
-  --s-bioio: #db376f;
-  --s-iohub: #766ddf;
-  --s-acquire-zarr: #9c7b21;
+  /* ── series: one hue per slot, assigned by name in `_model.colours` ── */
+  --s-slot-0: #0c9488;
+  --s-slot-1: #d25117;
+  --s-slot-2: #3280de;
+  --s-slot-3: #db376f;
+  --s-slot-4: #766ddf;
+  --s-slot-5: #9c7b21;
+  --s-slot-6: #b83fc4;
   --s-other: #566065;
 
   /* ── status: fixed, never themed into a series hue ── */
@@ -94,12 +112,13 @@
   --line: #1d272a;
   --line-strong: #2a3639;
   --grid: #1a2427;
-  --s-ngio: #008c81;
-  --s-ngff-zarr: #c94901;
-  --s-ome-zarr-py: #2978d5;
-  --s-bioio: #c44273;
-  --s-iohub: #9152d7;
-  --s-acquire-zarr: #917622;
+  --s-slot-0: #008c81;
+  --s-slot-1: #c94901;
+  --s-slot-2: #2978d5;
+  --s-slot-3: #c44273;
+  --s-slot-4: #9152d7;
+  --s-slot-5: #917622;
+  --s-slot-6: #d200c0;
   --s-other: #8d999c;
   --st-ok: #0ca30c;
   --st-unsupported: #3a4548;
@@ -124,12 +143,13 @@
     --line: #1d272a;
     --line-strong: #2a3639;
     --grid: #1a2427;
-    --s-ngio: #008c81;
-    --s-ngff-zarr: #c94901;
-    --s-ome-zarr-py: #2978d5;
-    --s-bioio: #c44273;
-    --s-iohub: #9152d7;
-    --s-acquire-zarr: #917622;
+    --s-slot-0: #008c81;
+    --s-slot-1: #c94901;
+    --s-slot-2: #2978d5;
+    --s-slot-3: #c44273;
+    --s-slot-4: #9152d7;
+    --s-slot-5: #917622;
+    --s-slot-6: #d200c0;
     --s-other: #8d999c;
     --st-unsupported: #3a4548;
     --st-warn: #c8a63a;
@@ -651,6 +671,16 @@ svg .peak-mark {
   border-collapse: separate;
   border-spacing: 2px;
   width: 100%;
+}
+
+/* One column and no group axis: a list, not a matrix. Stretching a single
+   cell across the card would read as a table with its headers missing. */
+.matrix[data-single] {
+  width: auto;
+}
+
+.matrix[data-single] td {
+  min-width: 200px;
 }
 
 .matrix th {

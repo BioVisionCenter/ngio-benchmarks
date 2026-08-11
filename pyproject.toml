@@ -68,9 +68,13 @@ ngio-bench-compare-io = "ngio_benchmarks.compare.io._cli:main"
 ngio-bench-compare-create = "ngio_benchmarks.compare.create._cli:main"
 
 # Reading a run back, rather than performing one. Takes a results CSV instead
-# of a config, and understands the compare-create schema only -- the other two
-# suites write different columns and would need different charts.
-ngio-bench-report-create = "ngio_benchmarks.report._cli:main"
+# of a config. One command per suite, named after the suite it reads, for the
+# same reason there is one runner per suite: the three write different columns,
+# and each command refuses the other two at the door rather than half-rendering
+# one of them. The page underneath is one engine and three profiles.
+ngio-bench-report-internal = "ngio_benchmarks.report._cli:internal"
+ngio-bench-report-compare-io = "ngio_benchmarks.report._cli:compare_io"
+ngio-bench-report-compare-create = "ngio_benchmarks.report._cli:compare_create"
 
 # https://docs.astral.sh/ruff
 [tool.ruff]

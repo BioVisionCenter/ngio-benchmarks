@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════════
-   ngio benchmarks — compare-create report
+   ngio benchmarks — the report page, for all three suites
 
    No dependencies, no network. The charts are SVG built through the DOM API,
    which also settles the escaping question: every label here came out of a CSV
@@ -8,21 +8,30 @@
 
    Three things are load-bearing in the design:
 
-   * Colour identifies the implementation and nothing else. It never encodes a
-     value, and a slot is assigned by implementation name, so hiding a series
-     in the filter row never repaints the survivors.
+   * Colour identifies the series — the implementation, or the environment —
+     and nothing else. It never encodes a value, and the slot is assigned by
+     name in `_model.colours`, so hiding a series in the filter row never
+     repaints the survivors.
    * Colour is never the only channel. Every bar is directly labelled, every
      chart has a table view, and the texture toggle carries identity without
      hue for readers who need that.
-   * The audit columns are drawn on the chart. A writer whose pyramid differs
-     from the one it was asked for is hatched and marked, because a bar that
-     timed a different artefact is not comparable with the bars beside it.
+   * The audit column is drawn on the chart, whichever one the suite has. A
+     writer whose pyramid differs from the one it was asked for, or a reader
+     whose checksum differs from what the rest of its cell returned, is hatched
+     and marked — a bar that timed a different artefact is not comparable with
+     the bars beside it.
+
+   Nothing below names a suite. What differs between the three arrives in
+   `DATA.profile`: which columns to show, what to call them, which memory
+   figure was recorded, and every word of prose the page prints. See
+   `_profile.py`, where all of it is written down once.
    ══════════════════════════════════════════════════════════════════════════ */
 
 (function () {
   "use strict";
 
   var DATA = JSON.parse(document.getElementById("report-data").textContent);
+  var P = DATA.profile;
   var SVGNS = "http://www.w3.org/2000/svg";
 
   /* ── formatting, mirroring core/output.py so the page and the terminal
@@ -70,12 +79,36 @@
     return value.toFixed(2) + "×";
   }
 
-  function slug(name) {
-    return String(name).replace(/[^a-zA-Z0-9]+/g, "-").toLowerCase();
+  // The palette slot this series holds, assigned once in Python over the whole
+  // file. Never derived from position here: a name the profile did not pin
+  // still keeps its slot when the filter row hides its neighbours.
+  function slotOf(name) {
+    var slot = P.colours[name];
+    return slot == null ? -1 : slot;
   }
 
-  function seriesColour(impl) {
-    return "var(--s-" + slug(impl) + ", var(--s-other))";
+  function seriesColour(name) {
+    var slot = slotOf(name);
+    return slot < 0
+      ? "var(--s-other)"
+      : "var(--s-slot-" + slot + ", var(--s-other))";
+  }
+
+  // The tooltip and table columns are named by the profile, so the value they
+  // pull out of a record has to be formatted by name too. Every one of these
+  // is a formatter above, which is what keeps a number in the browser reading
+  // exactly as `core/output.py` would print it in the terminal.
+  function cell(row, key, format) {
+    if (format === "spread") return row.status === "ok" ? spread(row) : "";
+    var value = key ? row[key] : null;
+    if (format === "duration") return duration(value);
+    if (format === "megabytes") return megabytes(value);
+    // tracemalloc sees nothing at all for an adapter allocating in C++ or Rust
+    // buffers, and that is a different claim from "it used no memory".
+    if (format === "peak") return value == null ? "n/a — native buffers" : megabytes(value);
+    if (format === "bytes") return bytesize(value);
+    if (format === "times") return times(value);
+    return value == null ? "" : String(value);
   }
 
   /* ── state ────────────────────────────────────────────────────────────── */
@@ -139,7 +172,7 @@
         return AXIS_BY_FIELD[f] && AXIS_BY_FIELD[f].prefixed ? f + "=" + value : value;
       })
       .filter(Boolean);
-    return parts.length ? parts.join(" · ") : row.impl;
+    return parts.length ? parts.join(" · ") : row.column;
   }
 
   function passesFilters(row) {
@@ -178,7 +211,7 @@
       var key = seriesKey(r);
       if (seen[key]) return;
       seen[key] = true;
-      out.push({ key: key, label: seriesLabel(r), impl: r.impl, row: r });
+      out.push({ key: key, label: seriesLabel(r), column: r.column, row: r });
     });
     var fields = seriesFields();
     out.sort(function (a, b) {
@@ -275,30 +308,18 @@
   var tooltip = el("div", { class: "tooltip", role: "status" });
   document.body.appendChild(tooltip);
 
+  // Which lines a suite shows is the profile's decision; a record carries the
+  // same keys either way, so a column the schema does not have arrives blank
+  // and drops out here alongside the ones that are merely empty on this row.
   function detailPairs(row) {
-    var pairs = [];
-    if (row.status === "ok") {
-      pairs.push(["spread", spread(row)]);
-      pairs.push(["cpu / wall", row.parallelism == null ? "" : times(row.parallelism)]);
-      pairs.push([
-        "peak RAM",
-        row.peakMb == null ? "n/a — native buffers" : megabytes(row.peakMb),
-      ]);
-      pairs.push(["peak RSS", megabytes(row.procPeakMb)]);
-      pairs.push(["import cost", megabytes(row.rssBaseMb)]);
-      pairs.push(["store", bytesize(row.bytes)]);
-      pairs.push(["levels", row.levels]);
-      pairs.push(["level shapes", row.levelShapes]);
-      pairs.push(["pyramid", row.pyramid]);
-      pairs.push(["codec", row.codec]);
-      pairs.push(["chunks", row.chunks]);
-      if (row.shards) pairs.push(["shards", row.shards]);
-      if (row.methodNative) pairs.push(["filter used", row.methodNative]);
-      pairs.push(["version", row.implVersion]);
-    }
-    return pairs.filter(function (p) {
-      return p[1] !== "" && p[1] != null;
-    });
+    if (row.status !== "ok") return [];
+    return P.details
+      .map(function (d) {
+        return [d[0], cell(row, d[1], d[2])];
+      })
+      .filter(function (p) {
+        return p[1] !== "" && p[1] != null;
+      });
   }
 
   function tooltipBody(row, headline) {
@@ -307,7 +328,7 @@
       el("div", { class: "tip-series" }, [
         el("span", {
           class: "key",
-          style: "background:" + seriesColour(row.impl),
+          style: "background:" + seriesColour(row.column),
         }),
         el("span", { text: seriesLabel(row) }),
       ]),
@@ -356,10 +377,11 @@
 
   /* ── texture patterns: identity without hue ──────────────────────────── */
 
-  function defsFor(impls) {
+  function defsFor(names) {
     var defs = svgEl("defs");
-    // The "wrote a different pyramid" hatch. One neutral texture, so it reads
-    // as a caveat laid over a bar rather than as another series.
+    // The "did not measure the same thing" hatch, whichever audit column the
+    // suite has. One neutral texture, so it reads as a caveat laid over a bar
+    // rather than as another series.
     var caveat = svgEl("pattern", {
       id: "hatch-caveat",
       width: 6,
@@ -383,21 +405,28 @@
     );
     defs.appendChild(caveat);
 
-    // One ordered texture per implementation, 45° and its 135° mirror only,
-    // inked tone-on-tone. Off by default; the toggle is the accessibility
-    // channel, not decoration.
-    impls.forEach(function (impl, index) {
+    // One ordered texture per series, 45° and its 135° mirror only, inked
+    // tone-on-tone. Off by default; the toggle is the accessibility channel,
+    // not decoration.
+    //
+    // Keyed on the palette slot rather than on the name, for the same reason
+    // the colour is: the slot is stable across filters, and an `internal`
+    // environment label is free text that could otherwise collide once
+    // sanitised into an element id.
+    names.forEach(function (name) {
+      var slot = slotOf(name);
+      if (slot < 0) return;
       var pattern = svgEl("pattern", {
-        id: "tex-" + slug(impl),
+        id: "tex-slot-" + slot,
         width: 8,
         height: 8,
         patternUnits: "userSpaceOnUse",
-        patternTransform: "rotate(" + (index % 2 ? 135 : 45) + ")",
+        patternTransform: "rotate(" + (slot % 2 ? 135 : 45) + ")",
       });
       pattern.appendChild(
-        svgEl("rect", { width: 8, height: 8, fill: seriesColour(impl) })
+        svgEl("rect", { width: 8, height: 8, fill: seriesColour(name) })
       );
-      var gap = 3 + Math.floor(index / 2) * 2;
+      var gap = 3 + Math.floor(slot / 2) * 2;
       for (var x = 0; x < 8; x += gap) {
         pattern.appendChild(
           svgEl("line", {
@@ -416,8 +445,11 @@
     return defs;
   }
 
-  function fillFor(impl) {
-    return state.texture ? "url(#tex-" + slug(impl) + ")" : seriesColour(impl);
+  function fillFor(name) {
+    var slot = slotOf(name);
+    return state.texture && slot >= 0
+      ? "url(#tex-slot-" + slot + ")"
+      : seriesColour(name);
   }
 
   /* ── the timing view ─────────────────────────────────────────────────── */
@@ -435,10 +467,15 @@
       });
       if (found.length) return found[0];
     }
-    var ngio = all.filter(function (s) {
-      return s.impl === "ngio";
-    });
-    return ngio.length ? ngio[0] : all[0];
+    // The suite's own library leads where there is one to lead: a ratio in a
+    // comparison report is "against ngio" unless the reader says otherwise.
+    // `internal` names no baseline, because every series there is ngio.
+    var preferred = !P.baseline
+      ? []
+      : all.filter(function (s) {
+          return s.column === P.baseline;
+        });
+    return preferred.length ? preferred[0] : all[0];
   }
 
   function timingValue(row, base) {
@@ -540,11 +577,11 @@
       height: height,
       role: "img",
       "aria-label":
-        "Median wall-clock per implementation" +
+        "Median wall-clock per " + P.columnLabel +
         (state.facet ? ", " + state.facet + " " + facetValue : "") +
         ". The table below carries the same numbers.",
     });
-    svg.appendChild(defsFor(DATA.impls));
+    svg.appendChild(defsFor(DATA.columns));
 
     var tickValues = logMode ? logTicks(bottom, top) : linearTicks(top, 5);
     tickValues.forEach(function (t) {
@@ -715,7 +752,7 @@
           cx: x(value),
           cy: mid,
           r: 5,
-          fill: fillFor(row.impl),
+          fill: fillFor(row.column),
           stroke: "var(--surface)",
           "stroke-width": 2,
         })
@@ -766,7 +803,7 @@
         "a" + r + "," + r + " 0 0 0 " + r + "," + r +
         "H" + to + "z";
 
-    g.appendChild(svgEl("path", { class: "bar", d: path, fill: fillFor(row.impl) }));
+    g.appendChild(svgEl("path", { class: "bar", d: path, fill: fillFor(row.column) }));
 
     if (row.fair === false) {
       g.appendChild(
@@ -813,7 +850,7 @@
   function valueLabel(row, value) {
     return (
       (state.values === "ratio" ? times(value) : duration(row.seconds)) +
-      (row.fair === false ? " ≠" : "") +
+      (row.fair === false ? " " + P.caveat.mark : "") +
       (MIXED_REPEATS && row.repeats === 1 ? "  n=1" : "")
     );
   }
@@ -844,19 +881,26 @@
   }
 
   function timingLegend(series) {
-    var impls = [];
+    var names = [];
     series.forEach(function (s) {
-      if (impls.indexOf(s.impl) === -1) impls.push(s.impl);
+      if (names.indexOf(s.column) === -1) names.push(s.column);
     });
     var list = el("ul", { class: "legend" });
-    impls.forEach(function (impl) {
-      list.appendChild(
-        el("li", {}, [
-          el("span", { class: "swatch", style: "background:" + seriesColour(impl) }),
-          el("span", { text: impl }),
-        ])
-      );
-    });
+
+    // One series in the whole file means colour distinguishes nothing, and a
+    // one-item swatch list would dress that up as a key. `internal` with no
+    // `[[environments]]` is the ordinary case of this, not an edge one.
+    var single = DATA.columns.length === 1;
+    if (!single) {
+      names.forEach(function (name) {
+        list.appendChild(
+          el("li", {}, [
+            el("span", { class: "swatch", style: "background:" + seriesColour(name) }),
+            el("span", { text: name }),
+          ])
+        );
+      });
+    }
     list.appendChild(
       el("li", {}, [
         el("span", {
@@ -866,38 +910,39 @@
         el("span", { text: "unsupported or not run" }),
       ])
     );
-    list.appendChild(
-      el("li", {}, [
-        el("span", {
-          class: "swatch",
-          style:
-            "background:" +
-            "repeating-linear-gradient(45deg,var(--muted) 0 2px,transparent 2px 5px)",
-        }),
-        el("span", { text: "≠ built a different pyramid" }),
-      ])
-    );
+    if (P.caveat) {
+      list.appendChild(
+        el("li", {}, [
+          el("span", {
+            class: "swatch",
+            style:
+              "background:" +
+              "repeating-linear-gradient(45deg,var(--muted) 0 2px,transparent 2px 5px)",
+          }),
+          el("span", { text: P.caveat.legend }),
+        ])
+      );
+    }
 
     var wrap = el("div", { class: "card" }, [
       el("h3", { text: "Reading these bars" }),
       list,
-      el("p", {
-        class: "legend-note",
-        text:
-          "Colour names the implementation and nothing else — it never encodes a " +
-          "value, and hiding a series never repaints the others. Every bar is also " +
-          "labelled, so colour is never the only way to tell two of them apart; the " +
-          "texture toggle carries identity without hue entirely.",
-      }),
-      el("p", {
-        class: "legend-note",
-        text:
-          "A hatched bar marked ≠ wrote a pyramid other than the one it was asked " +
-          "for, so its timing is not like-for-like with the bars beside it. Check " +
-          "the pyramid, codec and store columns in the tooltip before reading a " +
-          "duration as a result.",
-      }),
     ]);
+    if (single) {
+      wrap.appendChild(
+        el("p", {
+          class: "legend-note",
+          text:
+            "One " + P.columnLabel + " in this file, so every bar is the same " +
+            "colour. What tells two of them apart is the label beside each one.",
+        })
+      );
+    }
+    // Assembled in Python: the colour paragraph, then the audit column's own
+    // explanation when the suite has one.
+    P.legend.forEach(function (text) {
+      wrap.appendChild(el("p", { class: "legend-note", text: text }));
+    });
     return wrap;
   }
 
@@ -930,14 +975,23 @@
       byKey[(r.axes[state.group] || "") + "" + seriesKey(r)] = r;
     });
 
+    // With no group axis the matrix has one column and nothing to head it, so
+    // it stops being a matrix and becomes a list: no header row, and a natural
+    // width rather than a single cell stretched across the card. `compare-io`
+    // faceted by operation and `internal` faceted by block both land here.
+    var listed = !state.group && groups.length === 1;
+
     var table = el("table", { class: "matrix" });
-    var head = el("tr", {}, [el("th", { text: "" })]);
-    groups.forEach(function (g) {
-      head.appendChild(
-        el("th", { scope: "col", text: (state.group ? state.group + " = " : "") + (g || "—") })
-      );
-    });
-    table.appendChild(el("thead", {}, [head]));
+    if (listed) table.setAttribute("data-single", "true");
+    if (!listed) {
+      var head = el("tr", {}, [el("th", { text: "" })]);
+      groups.forEach(function (g) {
+        head.appendChild(
+          el("th", { scope: "col", text: (state.group ? state.group + " = " : "") + (g || "—") })
+        );
+      });
+      table.appendChild(el("thead", {}, [head]));
+    }
 
     var body = el("tbody");
     series.forEach(function (s) {
@@ -947,7 +1001,7 @@
           el("div", { class: "row-head" }, [
             el("span", {
               class: "swatch",
-              style: "background:" + seriesColour(s.impl),
+              style: "background:" + seriesColour(s.column),
             }),
             el("span", { text: s.label }),
           ]),
@@ -962,7 +1016,7 @@
     var scroll = el("div", { class: "table-scroll" }, [table]);
     return card(
       state.facet ? state.facet + " = " + facetValue : "all rows",
-      "what each writer can express, and what it wrote when it could",
+      P.coverageSubhead,
       scroll,
       rows,
       "coverage"
@@ -987,10 +1041,14 @@
     if (row.status === "ok") {
       button.appendChild(el("span", { class: "metric", text: duration(row.seconds) }));
       if (row.fair === false) {
-        button.appendChild(el("span", { class: "caveat", text: "≠ pyramid" }));
-      } else if (row.codec) {
+        button.appendChild(el("span", { class: "caveat", text: P.caveat.chip }));
+      } else if (P.coverageChip && row[P.coverageChip]) {
         button.appendChild(
-          el("span", { class: "caveat", style: "color:var(--faint)", text: row.codec })
+          el("span", {
+            class: "caveat",
+            style: "color:var(--faint)",
+            text: row[P.coverageChip],
+          })
         );
       }
     }
@@ -1058,6 +1116,10 @@
         return r.status === "ok";
       });
       if (!measured.length) return;
+      // A suite that recorded no memory figure at all would otherwise draw a
+      // card of empty bars. `internal` records tracemalloc's, the comparison
+      // suites record the RSS split; neither draws when the column is blank.
+      if (!measured.some(memoryValue)) return;
       // The whole facet goes in, not just the measured rows: a writer that
       // cannot express this filter should say so in its slot, exactly as it
       // does on the timing chart, rather than reading as "not run".
@@ -1069,6 +1131,19 @@
     root.appendChild(memoryLegend());
   }
 
+  // Which memory figure this suite actually recorded. The comparison runners
+  // take a baseline before each case (`compare/_run.py`), so their rows carry
+  // the import/case split; `internal`'s blocks share one interpreter and take
+  // none, so its process high-water mark is a run-wide number wearing a row's
+  // label and the honest per-case column is tracemalloc's.
+  var SPLIT = P.memory === "split";
+
+  function memoryValue(row) {
+    if (!row) return null;
+    if (SPLIT) return row.rssBaseMb == null ? null : row.rssBaseMb + (row.caseMb || 0);
+    return row.peakMb;
+  }
+
   function memoryCard(facetValue, rows, measured) {
     var groups = distinct(rows, state.group);
     var series = seriesList(rows);
@@ -1078,7 +1153,7 @@
     });
 
     var totals = measured.map(function (r) {
-      return (r.rssBaseMb || 0) + (r.caseMb || 0);
+      return memoryValue(r) || 0;
     });
     var top = niceMax(Math.max.apply(null, totals.concat([1])));
 
@@ -1100,10 +1175,12 @@
       height: height,
       role: "img",
       "aria-label":
-        "Peak resident memory split into import cost and case cost. " +
+        (SPLIT
+          ? "Peak resident memory split into import cost and case cost. "
+          : "Peak memory Python's allocator accounted for, per case. ") +
         "The table below carries the same numbers.",
     });
-    svg.appendChild(defsFor(DATA.impls));
+    svg.appendChild(defsFor(DATA.columns));
 
     linearTicks(top, 5).forEach(function (t) {
       svg.appendChild(
@@ -1121,7 +1198,11 @@
           x: x(t),
           y: height - PAD_BOTTOM + 18,
           "text-anchor": "middle",
-          text: t.toFixed(0) + " MB",
+          // Enough places for the axis to have distinct labels. Whole numbers
+          // suit the hundreds of MB a writer moves; `internal` measures single
+          // megabytes per case, where five ticks rounded to integers would read
+          // "0, 1, 1, 2, 2 MB" and claim the scale repeats itself.
+          text: (top < 10 ? t.toFixed(1) : t.toFixed(0)) + " MB",
         })
       );
     });
@@ -1149,7 +1230,7 @@
 
     return card(
       state.facet ? state.facet + " = " + facetValue : "all rows",
-      "peak resident memory: what importing the library cost, and what the case cost on top",
+      P.memorySubhead,
       svg,
       rows,
       "memory"
@@ -1168,7 +1249,7 @@
         text: s.label,
       })
     );
-    if (!row || row.rssBaseMb == null) {
+    if (memoryValue(row) == null) {
       g.appendChild(
         svgEl("rect", {
           class: "ghost-bar",
@@ -1179,15 +1260,50 @@
           rx: 3,
         })
       );
+      // A measured row with no figure is not a row that did not run. Under
+      // tracemalloc that is an adapter allocating in native buffers Python
+      // never saw, which is a fact about the library, not a gap in the file.
+      var why = !row
+        ? "not run"
+        : row.status !== "ok"
+          ? row.status
+          : "n/a — native buffers";
       g.appendChild(
         svgEl("text", {
           class: "value-label",
           x: x(0) + 34,
           y: mid + 4,
-          text: row ? row.status : "not run",
+          text: why,
         })
       );
-      if (row) attachTip(g, row, gutter, plotWidth, y, row.status);
+      if (row) attachTip(g, row, gutter, plotWidth, y, why);
+      return g;
+    }
+
+    // One bar, one claim: what Python's allocator accounted for inside the
+    // case. There is no import cost to lay beneath it -- the blocks share an
+    // interpreter, so nothing was imported per case.
+    if (!SPLIT) {
+      g.appendChild(
+        svgEl("rect", {
+          class: "bar",
+          x: x(0),
+          y: mid - BAR / 2,
+          width: Math.max(x(row.peakMb) - x(0), 1),
+          height: BAR,
+          rx: 3,
+          fill: fillFor(row.column),
+        })
+      );
+      g.appendChild(
+        svgEl("text", {
+          class: "value-label",
+          x: x(row.peakMb) + 8,
+          y: mid + 4,
+          text: megabytes(row.peakMb),
+        })
+      );
+      attachTip(g, row, gutter, plotWidth, y, megabytes(row.peakMb) + " for the case");
       return g;
     }
 
@@ -1203,7 +1319,7 @@
         y: mid - BAR / 2,
         width: Math.max(baseEnd - x(0), 1),
         height: BAR,
-        fill: fillFor(row.impl),
+        fill: fillFor(row.column),
         "fill-opacity": 0.32,
       })
     );
@@ -1216,7 +1332,7 @@
         width: Math.max(caseEnd - baseEnd - 2, 1),
         height: BAR,
         rx: 3,
-        fill: fillFor(row.impl),
+        fill: fillFor(row.column),
       })
     );
 
@@ -1295,10 +1411,10 @@
       height: height,
       role: "img",
       "aria-label":
-        "CPU seconds divided by wall seconds, per implementation. Above one " +
+        "CPU seconds divided by wall seconds, per " + P.columnLabel + ". Above one " +
         "means the library used more than one thread.",
     });
-    svg.appendChild(defsFor(DATA.impls));
+    svg.appendChild(defsFor(DATA.columns));
 
     linearTicks(top, 4).forEach(function (t) {
       svg.appendChild(
@@ -1363,7 +1479,7 @@
           width: w,
           height: BAR,
           rx: 3,
-          fill: fillFor(s.impl),
+          fill: fillFor(s.column),
         })
       );
       g.appendChild(
@@ -1389,18 +1505,44 @@
   }
 
   function memoryLegend() {
+    if (!SPLIT) {
+      return el("div", { class: "card" }, [
+        el("h3", { text: "Reading these bars" }),
+        el("ul", { class: "legend" }, [
+          el("li", {}, [
+            el("span", { class: "swatch", style: "background:var(--s-slot-0)" }),
+            el("span", { text: "peak memory tracemalloc accounted for, per case" }),
+          ]),
+        ]),
+        el("p", {
+          class: "legend-note",
+          text:
+            "Python's allocator, not the operating system's. It is the per-case " +
+            "column because the blocks share one interpreter: the process " +
+            "high-water mark is a single number for the whole run, and repeating " +
+            "it on every row would say nothing about any of them. It is in the " +
+            "tooltip as `process peak RSS`, named for what it is.",
+        }),
+        el("p", {
+          class: "legend-note",
+          text:
+            "A row reading n/a has no figure rather than a figure of nothing — " +
+            "an allocation Python's allocator never saw.",
+        }),
+      ]);
+    }
     return el("div", { class: "card" }, [
       el("h3", { text: "Reading these bars" }),
       el("ul", { class: "legend" }, [
         el("li", {}, [
           el("span", {
             class: "swatch",
-            style: "background:var(--s-ngio);opacity:.32",
+            style: "background:var(--s-slot-0);opacity:.32",
           }),
           el("span", { text: "import cost — the process before the case ran" }),
         ]),
         el("li", {}, [
-          el("span", { class: "swatch", style: "background:var(--s-ngio)" }),
+          el("span", { class: "swatch", style: "background:var(--s-slot-0)" }),
           el("span", { text: "case cost — peak RSS above that baseline" }),
         ]),
         el("li", {}, [
@@ -1452,22 +1594,39 @@
       [state.group || "case", function (r) { return state.group ? r.axes[state.group] : r.case; }, false],
       ["status", function (r) { return r.status; }, false],
     ];
+    // The columns every suite has are here; the trailing ones a suite has
+    // because its schema has them come from the profile, so a table never
+    // carries a header for a column the file could not fill.
+    function fromProfile(which) {
+      P.tables[which].forEach(function (c) {
+        columns.push([
+          c[0],
+          function (r) {
+            return cell(r, c[1], c[2]);
+          },
+          c[3],
+        ]);
+      });
+    }
+
     if (kind === "cpu") {
       columns.push(["cpu / wall", function (r) { return times(r.parallelism); }, true]);
     } else if (kind === "memory") {
-      columns.push(["import MB", function (r) { return megabytes(r.rssBaseMb); }, true]);
-      columns.push(["case MB", function (r) { return megabytes(r.caseMb); }, true]);
-      columns.push(["tracemalloc", function (r) { return r.peakMb == null ? "n/a" : megabytes(r.peakMb); }, true]);
+      if (SPLIT) {
+        columns.push(["import MB", function (r) { return megabytes(r.rssBaseMb); }, true]);
+        columns.push(["case MB", function (r) { return megabytes(r.caseMb); }, true]);
+        columns.push(["tracemalloc", function (r) { return r.peakMb == null ? "n/a" : megabytes(r.peakMb); }, true]);
+      } else {
+        columns.push(["tracemalloc", function (r) { return r.peakMb == null ? "n/a" : megabytes(r.peakMb); }, true]);
+        columns.push(["process peak MB", function (r) { return megabytes(r.procPeakMb); }, true]);
+      }
     } else if (kind === "coverage") {
       columns.push(["median", function (r) { return duration(r.seconds); }, true]);
-      columns.push(["pyramid", function (r) { return r.pyramid; }, false]);
-      columns.push(["codec", function (r) { return r.codec; }, false]);
-      columns.push(["note", function (r) { return r.note; }, false]);
+      fromProfile("coverage");
     } else {
       columns.push(["median", function (r) { return duration(r.seconds); }, true]);
       columns.push(["spread", function (r) { return r.status === "ok" ? spread(r) : ""; }, true]);
-      columns.push(["store", function (r) { return bytesize(r.bytes); }, true]);
-      columns.push(["pyramid", function (r) { return r.pyramid; }, false]);
+      fromProfile("timing");
     }
 
     var table = el("table", { class: "data-table" });
@@ -1483,7 +1642,7 @@
         var td = el("td", { class: c[2] ? "num" : "" });
         if (i === 0) {
           td.appendChild(
-            el("span", { class: "swatch", style: "background:" + seriesColour(r.impl) })
+            el("span", { class: "swatch", style: "background:" + seriesColour(r.column) })
           );
         }
         td.appendChild(document.createTextNode(String(c[1](r) || "")));
@@ -1544,10 +1703,8 @@
     var p = DATA.provenance;
     var head = el("header", { class: "masthead" }, [
       el("div", { class: "title" }, [
-        el("span", { class: "eyebrow", text: "ngio benchmarks · compare-create" }),
-        el("h1", {}, [
-          document.createTextNode("Building an OME-Zarr, compared"),
-        ]),
+        el("span", { class: "eyebrow", text: P.eyebrow }),
+        el("h1", {}, [document.createTextNode(P.title)]),
         el("p", {
           class: "source",
           text:
@@ -1565,7 +1722,7 @@
 
     var facts = el("ul", { class: "provenance" });
     [
-      ["operation", p.ops.join(", ")],
+      [P.groupLabel, p.groups.join(", ")],
       ["platform", p.platform.join(", ")],
       ["python", p.python.join(", ")],
       ["zarr", p.zarr.join(", ")],
@@ -1579,10 +1736,10 @@
             : p.minRepeats + "–" + p.maxRepeats,
       ],
       [
-        "versions",
+        P.versionsLabel,
         Object.keys(p.versions)
-          .map(function (impl) {
-            return impl + " " + p.versions[impl].join("/");
+          .map(function (name) {
+            return name + " " + p.versions[name].join("/");
           })
           .join(" · "),
       ],

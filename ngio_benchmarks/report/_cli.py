@@ -1,14 +1,16 @@
-"""`ngio-bench-report-create` -- a results CSV in, one HTML file out.
+"""`ngio-bench-report-<suite>` -- a results CSV in, one HTML file out.
 
 The three suites take a config file, because a config file *is* the experiment.
-This command is the other direction: the experiment already ran, and what is
-left is reading it. So it does not route through `core.cli.parse`, whose two
+These commands are the other direction: the experiment already ran, and what is
+left is reading it. So they do not route through `core.cli.parse`, whose two
 arguments are `config` and `--list`, neither of which means anything here.
 
-The name says `-create` rather than claiming a general `ngio-bench-report`,
-because it understands one schema. `compare-io` and `internal` write different
-columns and would need different charts; when they get one, they get their own
-command, for the same reason there is no shared `ngio-bench` dispatcher.
+One command per suite, named after the suite it reads, for the same reason
+there is no shared `ngio-bench` dispatcher. The three write different columns,
+and each command's `check_csv` refuses the other two at the door rather than
+half-rendering one of them. What they share is everything below the schema: one
+model, one stylesheet, one chart engine, and a `Profile` describing what each is
+looking at.
 """
 
 from __future__ import annotations
@@ -17,20 +19,21 @@ import argparse
 import webbrowser
 from pathlib import Path
 
+from ngio_benchmarks.report import _profile
 from ngio_benchmarks.report._model import shape
 from ngio_benchmarks.report._page import write
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Render a `compare-create` CSV to a self-contained HTML report."""
+def _main(profile: _profile.Profile, argv: list[str] | None) -> int:
+    """Render one suite's results CSV to a self-contained HTML report."""
     parser = argparse.ArgumentParser(
-        prog="ngio-bench-report-create",
+        prog=f"ngio-bench-report-{profile.command}",
         description=(
-            "Render a compare-create results CSV as one self-contained, "
+            f"Render a {profile.suite} results CSV as one self-contained, "
             "interactive HTML file."
         ),
     )
-    parser.add_argument("csv", type=Path, help="a compare-create results CSV")
+    parser.add_argument("csv", type=Path, help=f"a {profile.suite} results CSV")
     parser.add_argument(
         "-o",
         "--output",
@@ -48,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.csv.exists():
         raise SystemExit(f"{args.csv} does not exist.")
 
-    report = shape(args.csv)
+    report = shape(args.csv, profile)
     destination = args.output or args.csv.with_suffix(".html")
     written = write(report, args.csv.name, destination)
 
@@ -63,5 +66,16 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def internal(argv: list[str] | None = None) -> int:
+    """Render an `internal` results CSV."""
+    return _main(_profile.INTERNAL, argv)
+
+
+def compare_io(argv: list[str] | None = None) -> int:
+    """Render a `compare-io` results CSV."""
+    return _main(_profile.IO, argv)
+
+
+def compare_create(argv: list[str] | None = None) -> int:
+    """Render a `compare-create` results CSV."""
+    return _main(_profile.CREATE, argv)
