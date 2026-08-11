@@ -62,6 +62,63 @@ def patch(spec: ImageSpec, op: str, root: Path):
     return np.ascontiguousarray(source[region(spec, op)])
 
 
+def audit(path: Path, spec: ImageSpec, op: str) -> dict[str, str]:
+    """Read a write back off disk and hash what it actually left there.
+
+    This exists because of a row that looked fine. `dask` writing the `sharded`
+    image posts a good time for output that is **wrong**: its blocks are single
+    chunks while the target's write unit is a 256-chunk shard, so every block
+    makes zarr read-modify-write the whole shard, and `lock=False` lets those
+    races lose each other's updates. Nothing in the suite was looking -- the
+    checksum was computed for reads only -- so the fast number stood unchallenged.
+    Measured in `reports/dask-sharded-write-races.md`.
+
+    Filed under the same `checksum` column as a read, deliberately, because it is
+    the same claim: *the digest of the pixels this row was responsible for*. That
+    makes the whole audit apparatus apply unchanged -- a comparison cell is keyed
+    on `(op, image)`, so writers are held against writers of the same operation,
+    and a row that disagrees with the rest of its cell gets hatched exactly as a
+    divergent read does.
+
+    Read back with zarr-python rather than with whichever library wrote it: the
+    auditor must not be one of the contestants, or the one writer it could never
+    catch is the one it agrees with. `compare.create._ops.audit` refuses the same
+    thing for the same reason.
+
+    That costs nothing today -- zarr resolves into all six io environments, so
+    every implementation is audited, `z5py` and `tensorstore` included. The guard
+    below stays anyway, because `REQUIRES` is the adapter's to declare and an
+    environment without zarr is a thing an adapter is allowed to ask for. If one
+    ever does, its cell goes blank, and **a blank cell means "not checked", never
+    "passed"**: `report._model._fair` returns `None` for it, which the page draws
+    differently from a failure.
+    """
+    try:
+        import zarr
+    except ImportError:  # tensorstore, z5py -- no zarr, so no audit
+        return {}
+    from ngio_benchmarks.compare._run import checksum
+
+    if not path.exists():
+        return {}
+    # ngio writes an OME container whose pixels are at "0"; the peers write a
+    # bare array at the root. Which one is not the thing being audited.
+    candidates = (
+        lambda: zarr.open_array(store=path, path="0"),
+        lambda: zarr.open_array(store=path),
+    )
+    for opened in candidates:
+        try:
+            array = opened()
+        except Exception:
+            # Any failure here means "not that shape" -- try the other. A store
+            # neither of them opens leaves the cell blank, which reads as
+            # unchecked rather than as passing.
+            continue
+        return {"checksum": checksum(array[region(spec, op)])}
+    return {}
+
+
 def target(root: Path, impl: str, op: str, spec: ImageSpec) -> Path:
     """A fresh store for a write operation, cleared if it already exists.
 

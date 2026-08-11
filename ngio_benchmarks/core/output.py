@@ -68,6 +68,14 @@ class Schema(NamedTuple):
     #: prints one per block; the comparison suites print one per operation,
     #: which is what makes a row a like-for-like comparison across columns.
     group: str = "block"
+    #: Which axes make two rows the *same question*, for the audit that checks a
+    #: cell agreed with itself. `None` means all of them, which is right wherever
+    #: an axis changes what gets produced -- `create`'s `method` and `order` pick
+    #: different downsampling, so two rows that differ there were never asked for
+    #: the same bytes. It is wrong for an axis that only picks *how*: `compare-io`
+    #: sets this to exclude ngio's `mode`, whose two values read one store
+    #: through two APIs and must therefore be held to the peers' digest.
+    comparison_fields: tuple[str, ...] | None = None
 
 
 def log(message: str) -> None:
@@ -169,6 +177,43 @@ def check_csv(path: Path, schema: Schema) -> bool:
             "write to a new file instead."
         )
     return True
+
+
+def check_readable(path: Path, schema: Schema) -> None:
+    """Raise unless `path` is a results file this suite can *report* on.
+
+    Deliberately looser than `check_csv`. Appending needs the header to match
+    exactly, because a row is written positionally and one shifted column is
+    silently wrong data. Reading needs no such thing: `csv.DictReader` matches by
+    name and `_model` takes every field through `row.get(field, "")`, so a file
+    written before the schema grew a column reports fine with that column blank.
+    Holding reads to the append rule would mean every added column silently
+    retired every result anyone had already measured.
+
+    What still has to be checked is that this is *this suite's* file, which the
+    subset test answers: a `compare-create` CSV carries `levels` and `codec`, an
+    `internal` one carries `block`, and neither is a subset of any other schema's
+    fields -- so the door each report command keeps against the other two stays
+    shut. A file missing the identifying columns is refused for the same reason.
+    """
+    if not (path.exists() and path.stat().st_size > 0):
+        raise SystemExit(f"{path} is empty -- run the suite before reporting on it.")
+    with path.open(newline="") as handle:
+        existing = tuple(next(csv.reader(handle), []))
+    unknown = [field for field in existing if field not in schema.fields]
+    if unknown:
+        raise SystemExit(
+            f"{path} was not written by this suite -- it has columns this one "
+            f"has no meaning for ({', '.join(unknown)}).\n"
+            "Each suite keeps its own report command; try one of the others."
+        )
+    required = (schema.column, schema.group, "status", "seconds")
+    missing = [field for field in required if field not in existing]
+    if missing:
+        raise SystemExit(
+            f"{path} is missing columns this report cannot do without "
+            f"({', '.join(missing)})."
+        )
 
 
 def write_csv(path: Path, schema: Schema, rows: Iterable[dict[str, str]]) -> None:
@@ -403,8 +448,9 @@ def _table(rows: list[dict[str, str]], schema: Schema, block: str, image: str) -
     ]
 
     names = _width(rows, key, len(key))
-    # Dropped when nothing varies -- every row of `compare-io` -- rather than
-    # printed as a column of blanks under a heading promising a distinction.
+    # Dropped when nothing varies -- every row of a `compare-io` file that sweeps
+    # no options -- rather than printed as a column of blanks under a heading
+    # promising a distinction.
     variants = (
         _width(rows, "variant", len("variant"))
         if any(r.get("variant") for r in rows)

@@ -261,7 +261,7 @@ Array access compared across libraries, over `impl` × `op` × `image`.
 
 | impl | what it is |
 | --- | --- |
-| `ngio` | `open_image` / `get_as_numpy` / `set_array`, via public slicing keywords |
+| `ngio` | `open_image` / `get_as_numpy` / `set_array`, via public slicing keywords; `mode = "dask"` swaps in `get_as_dask` and a dask patch |
 | `zarr` | zarr-python directly — the floor every other row is read against |
 | `zarrs` | the same code under the zarrs (Rust) codec pipeline; **zarr v3 only** |
 | `dask` | `da.from_array` / `da.store`, with `.compute()` inside the timing |
@@ -272,6 +272,33 @@ The aligned/straddling pair is the read-amplification question asked of
 everyone: a region inside chunk boundaries touches the minimum number of chunks,
 and the same region offset by half a chunk fetches and discards every chunk on
 each edge. The ratio between the two columns is what that costs.
+
+`ngio`'s `mode` and the `dask` row invite a direct comparison, and one half of it
+is not like-for-like. Both **reads** build a graph over the same chunk grid, so
+those are comparable. The **writes** are not: ngio stores behind a process-global
+lock, so its flushes are serialised, while the `dask` row passes `lock=False` and
+lets them race — visible as `cpu/wall` near 1 on one and well above it on the
+other.
+
+Whether that lock is buying anything depends on the cell. zarr read-modify-writes
+a whole **write unit** — the chunk, or the shard when the array is sharded —
+whenever a block does not cover one, and two blocks racing on the same unit lose
+an update. On an unsharded `write_full` a block is exactly one chunk, zarr reads
+nothing, and the lock costs ~3× for nothing. On `sharded`, and on either
+straddling write, it is the only reason the output is correct: the unlocked
+`dask` row on `sharded` `write_full` really does write corrupt data — 87% of the
+array wrong, at 4.6× ngio's speed, in a store one fifth the size. Measured in
+[`reports/dask-sharded-write-races.md`](reports/dask-sharded-write-races.md),
+with the ngio-facing half — where rechunking the patch to the shard shape turns
+10.7 s into 0.58 s — split out for filing upstream in
+[`reports/ngio-dask-sharded-writes.md`](reports/ngio-dask-sharded-writes.md).
+
+That row is why `checksum` covers writes as well as reads. A read is hashed from
+what it returned; a write is read back off disk afterwards by the `audit` hook,
+with zarr-python rather than with whichever library wrote it — the auditor must
+not be a contestant, or the one writer it can never catch is the one it agrees
+with. A blank cell is a write nothing could read back, which is *unchecked*, not
+passed.
 
 ### One fixture, written by nobody in the running
 
@@ -472,6 +499,14 @@ writers: it is the same question in two vocabularies, and
 `median`/`min`/`max`/`mode`, ngff-zarr's remaining `Methods`). It is mutually
 exclusive with `method`; the row is labelled with whichever was used.
 
+`compare-io` reads the same table. It has one option, which picks which of ngio's
+two array types every operation goes through:
+
+```toml
+[options.ngio]
+mode = ["numpy", "dask"]              # get_as_numpy, or get_as_dask + .compute()
+```
+
 ### The audit columns
 
 `levels`, `level_shapes`, `pyramid`, `codec`, `chunks` and `shards` are read
@@ -644,7 +679,8 @@ row against the first row that produced a number; the old table printed a `vs
 <base>` heading over a value that was `last/base`, so with six columns four of
 them got no ratio at all.
 
-`variant` disappears when nothing varies, which is every row of `compare-io`.
+`variant` disappears when nothing varies, which is every row of a `compare-io`
+file that sweeps no options.
 The `cpu/wall` column appears only when some row diverges from 1.0 by more than
 20%. `n/a` in `peak RAM` means `tracemalloc` could not account for that
 implementation, not that it allocated nothing.
@@ -773,11 +809,23 @@ def excludes_pipeline(pipeline, values) -> str:  # one combination it declines
     ...
 ```
 
-`METHODS` and `OPTIONS` are optional; an adapter declaring neither — every one
-in `compare-io` — is called as `build(op, spec, root)`, since the parent only
-passes keywords an adapter declared. `OPTIONS` follows the same open/closed
-declaration forms as a block's `AXES`, and a create adapter's option names go in
-`AXIS_FIELDS` in `compare/create/__init__.py`.
+`METHODS` and `OPTIONS` are optional; an adapter declaring neither — every one in
+`compare-io` but `ngio` — is called as `build(op, spec, root)`, since the parent
+only passes keywords an adapter declared. That is also why an option needs a
+`build`-side default: a config that does not name it sends nothing.
+
+`OPTIONS` follows the same open/closed declaration forms as a block's `AXES`, and
+an adapter's option names go in its suite's `AXIS_FIELDS` — `compare/create/__init__.py`
+for a writer, `compare/io/__init__.py` for a reader. Without that the option still
+runs and still labels the row's `case` and `variant`, but it gets no column of its
+own — `output.as_row` fills the axis columns from `schema.axis_fields` and nothing
+else — so the report cannot offer it as a facet, group or series.
+
+An axis that picks only *how*, not *what*, also belongs out of `comparison_fields`,
+which defaults to `axis_fields` and decides which rows the audit column holds to a
+common answer. `compare-io` narrows it to exclude `mode`: ngio's two values read
+one store through two APIs, so they must be checked against the peers' digest
+rather than each landing in a cell of one that trivially agrees with itself.
 
 `PIPELINES` and `excludes_pipeline` are the two ways out of the `pipeline` axis,
 and both are optional — a writer that goes through zarr-python declares neither

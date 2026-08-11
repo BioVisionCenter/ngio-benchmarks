@@ -263,17 +263,19 @@ IO = Profile(
         expected="",
         mark="≠",
         chip="≠ bytes",
-        legend="≠ read bytes the others did not",
+        legend="≠ moved bytes the others did not",
         help=(
-            "Every read in one cell opens the same store, so all of them should "
-            "hash to the same digest. A hatched bar marked ≠ returned a "
-            "different one — it read a different region, dtype or level, and "
-            "its duration is not comparable with the bars beside it. Writes "
-            "carry no checksum and are never marked."
+            "Every row in one cell handles the same pixels — a read opens the "
+            "one shared store, a write is read back off disk afterwards — so all "
+            "of them should hash to the same digest. A hatched bar marked ≠ did "
+            "not: it read a different region, dtype or level, or it wrote "
+            "something other than what it was given, and its duration is not "
+            "comparable with the bars beside it. A blank cell is a write nothing "
+            "could read back — unchecked, which is not the same as passing."
         ),
         notice=(
-            "{n} row{s} returned a checksum the rest of the cell did not agree "
-            "on. Those bars are hatched — they did not read the same bytes, so "
+            "{n} row{s} produced a checksum the rest of the cell did not agree "
+            "on. Those bars are hatched — they did not move the same bytes, so "
             "they are not like-for-like."
         ),
     ),

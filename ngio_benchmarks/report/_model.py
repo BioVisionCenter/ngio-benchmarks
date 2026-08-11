@@ -19,7 +19,7 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ngio_benchmarks.core.measure import OK
-from ngio_benchmarks.core.output import check_csv, read_csv
+from ngio_benchmarks.core.output import check_readable, read_csv
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -223,10 +223,10 @@ def _dedupe(
 
     It also includes the group column, and that is not belt and braces. A
     `compare-io` case label is built from the axis labels alone
-    (`core.axes.Case.label`), and the only axis there is the image -- so all six
-    operations of one implementation carry the case `image=small`, and a key
-    without the operation would silently collapse a 36-row file to six, keeping
-    whichever operation ran last.
+    (`core.axes.Case.label`), which for a file sweeping no options is the image
+    and nothing else -- so all six operations of one implementation carry the
+    case `image=small`, and a key without the operation would silently collapse
+    a 36-row file to six, keeping whichever operation ran last.
     """
     kept: dict[tuple[str, str, str, str], dict[str, str]] = {}
     for row in rows:
@@ -271,10 +271,16 @@ def _comparison(row: dict[str, str], profile: Profile) -> tuple[str, ...]:
     exactly when they were asked to do the same thing to the same input. The
     identifying column is excluded, because comparing implementations *within* a
     cell is the whole point.
+
+    `comparison_fields` narrows that when an axis picks only *how* rather than
+    *what* -- see the field's own note. It falls back to `axis_fields`, which is
+    what every suite but `compare-io` wants.
     """
+    schema = profile.schema
+    fields = schema.comparison_fields or schema.axis_fields
     return (
-        _cell(row, profile.schema.group),
-        *(_cell(row, field) for field in profile.schema.axis_fields),
+        _cell(row, schema.group),
+        *(_cell(row, field) for field in fields),
     )
 
 
@@ -309,9 +315,10 @@ def _fair(
 
     `None` rather than `False` when there is nothing to check: a suite with no
     audit column at all, or a row whose audit cell is blank because the writer
-    never got far enough to be audited, or -- in `compare-io` -- a write, which
-    carries no checksum by design. "We did not check" and "it differs" are
-    different claims and the page draws them differently.
+    never got far enough to be audited. "We did not check" and "it differs" are
+    different claims and the page draws them differently -- which matters most
+    now that writes carry a digest too, since an unchecked write rendering as a
+    passing one is the failure this whole column exists to prevent.
     """
     caveat = profile.caveat
     if caveat is None:
@@ -475,13 +482,12 @@ def _payload(profile: Profile, slots: dict[str, int]) -> dict[str, Any]:
 def shape(path: Path, profile: Profile) -> Report:
     """Read a results CSV and shape it for the page.
 
-    Raises `SystemExit` through `check_csv` when the header is not this suite's,
-    which is the same refusal the runner gives when asked to append to a file
-    written with different columns -- and the reason each suite keeps its own
-    report command rather than one that sniffs.
+    Raises `SystemExit` through `check_readable` when the header is not this
+    suite's -- the reason each suite keeps its own report command rather than one
+    that sniffs. A *narrower* header is accepted, so a CSV measured before the
+    schema grew a column still reports, with that column blank.
     """
-    if not check_csv(path, profile.schema):
-        raise SystemExit(f"{path} is empty -- run the suite before reporting on it.")
+    check_readable(path, profile.schema)
     raw = read_csv(path)
     if not raw:
         raise SystemExit(f"{path} has a header but no rows.")

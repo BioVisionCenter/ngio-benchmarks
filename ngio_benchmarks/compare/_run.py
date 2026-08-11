@@ -65,12 +65,16 @@ def environment(adapter: ModuleType, label: str) -> dict[str, str]:
     }
 
 
-def _checksum(value: object) -> str:
-    """A short digest of what a read returned.
+def checksum(value: object) -> str:
+    """A short digest of the pixels a case was responsible for.
 
-    Recorded so that "every implementation read the same bytes" is a column
+    Recorded so that "every implementation moved the same bytes" is a column
     anyone can check rather than an assumption the suite makes. Computed once,
     outside the timing.
+
+    Public because the io suite's `audit` hashes a *write* the same way, by
+    reading the store back off disk. One digest function, so a read row and a
+    write row in the same column mean the same kind of thing.
     """
     import numpy as np
 
@@ -162,9 +166,10 @@ def run(
         # ones with a pipeline. `variant` is where "what this file varied" lives.
         "pipeline": pipeline,
         "pipeline_version": version(_pipeline.distribution(pipeline)),
-        # Empty where nothing varies, which is every row of `compare-io`. The
-        # report drops the column entirely in that case rather than printing a
-        # word like `default` that implies a choice was available.
+        # Empty where nothing varies, which is every row of a `compare-io` file
+        # that sweeps no options. The report drops the column entirely in that
+        # case rather than printing a word like `default` that implies a choice
+        # was available.
         "variant": variant,
         "loadavg": f"{load_average():.2f}",
     }
@@ -192,12 +197,14 @@ def run(
 
     try:
         if op.startswith("read"):
-            # Reads only. The checksum needs one call to hash, and a read is
-            # cheap and side-effect free. A write or a pyramid build is
+            # Reads only *here*. The checksum needs one call to hash, and a read
+            # is cheap and side-effect free. A write or a pyramid build is
             # neither, and this used to run for those too -- an extra whole
             # store written per case that nobody asked for and no column
-            # reported.
-            extra["checksum"] = _checksum(measured.fn())
+            # reported. A write earns the same column below instead, from
+            # `audit`, which reads back what it left on disk rather than
+            # performing it again.
+            extra["checksum"] = checksum(measured.fn())
         timing = measure(
             measured.fn,
             repeats=repeats,
@@ -217,7 +224,7 @@ def run(
         path = Path(target)
         extra["bytes"] = _stored_bytes(path)
         if audit is not None:
-            extra.update(audit(path, spec))
+            extra.update(audit(path, spec, op))
     if getattr(adapter, "NATIVE", False) or pipeline in _pipeline.NATIVE:
         # tracemalloc cannot see this implementation's buffers, and a
         # 0.0 in the peak column would read as 'uses no memory' rather

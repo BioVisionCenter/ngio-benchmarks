@@ -227,8 +227,13 @@ def _declared(path: Path) -> int:
     return 0
 
 
-def audit(path: Path, spec: ImageSpec | None = None) -> dict[str, str]:
+def audit(
+    path: Path, spec: ImageSpec | None = None, op: str | None = None
+) -> dict[str, str]:
     """Report what a writer actually produced, read back off disk.
+
+    `op` is accepted and unused: the runner passes it for the io suite, whose
+    audit hashes a different region per operation. Here there is one operation.
 
     Not taken from what the writer was asked for: the point of these columns is
     to catch a writer that quietly produced something else, and asking it what

@@ -28,7 +28,13 @@ of it" rather than a comparison of two different files.
 
 from __future__ import annotations
 
+from ngio_benchmarks.compare.io._ops import audit
 from ngio_benchmarks.core.output import MEASUREMENT_FIELDS, Schema
+
+#: Picked up by `_child` as `getattr(suite, "audit", None)`. Writes get their
+#: `checksum` from here -- read back off disk, because asking a writer what it
+#: wrote is exactly the question it cannot be trusted with.
+__all__ = ["AXIS_FIELDS", "IMPLS", "OPS", "SCHEMA", "audit"]
 
 OPS = (
     "read_full",
@@ -48,6 +54,16 @@ IMPLS = {
     "z5py": "ngio_benchmarks.compare.io.adapters.z5py_impl",
 }
 
+#: The axes an io case can vary along, as a hand-maintained literal.
+#:
+#: `image` is the suite's own axis; `mode` is the ngio adapter's `OPTIONS` and is
+#: blank on every other row. Deliberately not computed by importing the adapters
+#: -- same reason as `create.AXIS_FIELDS`: an adapter is allowed to fail to
+#: import inside a narrower environment, which would give a child a shorter
+#: header than its parent and a merge that `KeyError`s. A stale entry costs one
+#: empty column; `--list` makes a mismatch obvious.
+AXIS_FIELDS = ("image", "mode")
+
 SCHEMA = Schema(
     fields=(
         "impl",
@@ -57,7 +73,7 @@ SCHEMA = Schema(
         "platform",
         "op",
         "case",
-        "image",
+        *AXIS_FIELDS,
         "variant",
         "zarr_format",
         *MEASUREMENT_FIELDS,
@@ -67,7 +83,13 @@ SCHEMA = Schema(
         "status",
         "note",
     ),
-    axis_fields=("image",),
+    axis_fields=AXIS_FIELDS,
+    # Not `AXIS_FIELDS`: `mode` is *how* ngio fetched the bytes, not *what* was
+    # asked for. Both of its rows read the store every peer reads, so they have
+    # to land in the peers' cell and be checked against them -- keying the cell
+    # on `mode` would make each of them a singleton that trivially agrees with
+    # itself, and the `!= bytes` mark could never fire on ngio again.
+    comparison_fields=("image",),
     column="impl",
     group="op",
 )

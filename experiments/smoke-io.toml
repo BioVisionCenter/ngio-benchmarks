@@ -8,3 +8,10 @@ repeats = 1
 warmup = 0
 
 image = ["small"]
+
+# Swept here and nowhere else by default: the dask path is the one code path in
+# this suite an adapter can get wrong silently -- forget the `.compute()` and it
+# still produces a row, just the fastest and most meaningless one in the table.
+# Six extra child processes on an 8 MiB image is a cheap way to keep proving it.
+[options.ngio]
+mode = ["numpy", "dask"]

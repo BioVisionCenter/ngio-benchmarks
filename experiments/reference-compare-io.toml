@@ -23,7 +23,7 @@
 
 # Which implementations to compare. Default: all of them.
 #
-#   ngio          open_image / get_as_numpy / set_array
+#   ngio          open_image / get_as_numpy / set_array, or get_as_dask — see [options.ngio]
 #   zarr          zarr-python directly — the floor every other row is read against
 #   zarrs         the same code under the zarrs (Rust) codec pipeline
 #   dask          da.from_array / da.store, .compute() inside the timing
@@ -47,7 +47,7 @@
 # Which images to sweep. Default: ["medium"].
 # Built-in names: small, medium, large, chunks64, chunks512, sharded,
 # uncompressed, v2. Add your own with an [images.<name>] table below.
-# image = ["medium"]
+image = ["small", "medium", "large", "chunks64", "chunks512", "sharded"]
 
 # --- measurement -----------------------------------------------------------
 
@@ -70,13 +70,13 @@
 
 # Append results to this CSV. Default: none — print the table only.
 # Relative to THIS FILE. Files under experiments/ ending in .csv are gitignored.
-# csv = "reference-compare-io.csv"
+csv = "reference-compare-io.csv"
 
 # Reuse and keep generated fixtures in .data/ instead of a temp dir.
 # Worth setting for a long sweep: the read fixture is written once by the
 # parent and shared by every implementation, so keeping it saves rebuilding it
 # on the next run. Default: false.
-# keep = false
+keep = false
 
 # Suppress each environment's install output. Default: false.
 # quiet = false
@@ -109,6 +109,39 @@
 # [env.tensorstore]
 # requires = ["tensorstore==0.1.85", "numpy>=2"]
 # python = "3.12"                        # overrides the adapter's pin
+
+
+# ===========================================================================
+# Options — one implementation's own settings, swept
+# ===========================================================================
+#
+# Knobs with no cross-library equivalent, declared per adapter and validated
+# before any environment installs. Nothing here sweeps by default: an option a
+# config does not name keeps the adapter's own default, so the matrix stays the
+# size it was.
+
+# Which of ngio's two array types every operation goes through: `get_as_numpy`
+# and a numpy patch, or `get_as_dask` and a dask one. `.compute()` is inside the
+# timed callable, so the dask rows measure a real read rather than the graph
+# that would have done it.
+#
+# Read `mode = "dask"` against the `dask` row with one asymmetry in mind. The
+# reads are comparable — both build a graph over the same chunk grid. The writes
+# are not: ngio stores behind a process-global lock and serialises its flushes,
+# while the `dask` row passes `lock = false` and lets them race.
+#
+# What the lock buys depends on the case. zarr read-modify-writes a whole write
+# unit — the chunk, or the shard when the array is sharded — whenever a block
+# does not cover one, and two blocks racing on the same unit lose an update. On
+# an unsharded `write_full` a block is exactly one chunk, so there is no read and
+# no race, and the lock costs ~3x for nothing. On the `sharded` image below, and
+# on every straddling write, it is the only reason the output is correct — the
+# unlocked `dask` row on sharded `write_full` writes 87% of the array wrong.
+# The `checksum` column covers writes, so those rows are marked rather than
+# merely fast. Measured: reports/dask-sharded-write-races.md
+
+[options.ngio]
+mode = ["numpy", "dask"]
 
 
 # ===========================================================================
