@@ -28,7 +28,7 @@ of it" rather than a comparison of two different files.
 
 from __future__ import annotations
 
-from ngio_benchmarks.core.output import Schema
+from ngio_benchmarks.core.output import MEASUREMENT_FIELDS, Schema
 
 OPS = (
     "read_full",
@@ -59,10 +59,10 @@ SCHEMA = Schema(
         "op",
         "case",
         "image",
+        "variant",
         "zarr_format",
-        "seconds",
-        "peak_mb",
-        "proc_peak_mb",
+        *MEASUREMENT_FIELDS,
+        "sync_seconds",
         "bytes",
         "checksum",
         "status",

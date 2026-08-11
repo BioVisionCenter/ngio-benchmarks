@@ -2,6 +2,9 @@
 # The .toml files under experiments/ are tracked, the CSVs they produce are not.
 experiments/**/*.csv
 
+# ...and the HTML report rendered from one, for the same reason.
+experiments/**/*.html
+
 # Generated fixtures under `keep = true`.
 .data/
 

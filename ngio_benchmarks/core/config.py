@@ -127,13 +127,18 @@ def names(data: dict[str, Any], key: str, valid: Collection[str], where: Path) -
     return list(value)
 
 
-def _tokens(where: str, values: Any) -> list[str]:
+def tokens(where: str, values: Any) -> list[str]:
     """Render one axis' values as tokens.
 
     Stringifying typed TOML into tokens looks like a loss, but it keeps a single
     code path: `apply_overrides` re-parses an open axis against the type its
     block declared, and a closed axis takes labels either way. Round-tripping an
     int, float, bool or string through `str` is exact.
+
+    Booleans are the one exception, and are spelled the way TOML spells them.
+    `str(True)` is `True`, so a config that wrote `use_tensorstore = [true]`
+    would be told there is no `'True'` and offered `true` -- correct, unhelpful,
+    and about a capital letter the file never contained.
 
     The scalar types are a whitelist, not a `list`/`dict` blacklist: TOML also
     has bare dates, and `z = 2026-08-10` would otherwise stringify happily, fail
@@ -149,7 +154,7 @@ def _tokens(where: str, values: Any) -> list[str]:
                 f"{where} takes numbers, strings or booleans, got "
                 f"{type(value).__name__} ({value!r})"
             )
-        tokens.append(str(value))
+        tokens.append(str(value).lower() if isinstance(value, bool) else str(value))
     return tokens
 
 
@@ -171,7 +176,7 @@ def _overrides(axes: Any, blocks: Collection[str], where: Path) -> tuple[Overrid
                 f"choose from: {', '.join(sorted(blocks))}"
             )
         for axis, values in value.items():
-            lowered.append((key, axis, _tokens(f"axes.{key}.{axis}", values)))
+            lowered.append((key, axis, tokens(f"axes.{key}.{axis}", values)))
     return tuple(lowered)
 
 

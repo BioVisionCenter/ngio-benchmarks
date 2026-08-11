@@ -42,7 +42,16 @@ class Job(NamedTuple):
     repeats: int | None = None
     warmup: int = 1
     blocks: tuple[str, ...] = ()
-    ops: tuple[str, ...] = ()
+    #: The one comparison case this child measures: `op`, `image`, `method`,
+    #: and an `options` mapping of that adapter's own settings.
+    #:
+    #: One case rather than a list, and therefore one child process per case.
+    #: That costs an interpreter start per case and buys two things a shared
+    #: child cannot give: `proc_peak_mb` becomes the high-water mark of *this*
+    #: case instead of the maximum over every case the child happened to run,
+    #: and no case inherits the heap, the allocator's free lists or the warmed
+    #: imports of the one before it.
+    case: dict[str, Any] = {}  # noqa: RUF012
     impl: str = ""
     overrides: tuple[Override, ...] = ()
     images: dict[str, ImageSpec] = {}  # noqa: RUF012
@@ -57,7 +66,7 @@ class Job(NamedTuple):
             "repeats": self.repeats,
             "warmup": self.warmup,
             "blocks": list(self.blocks),
-            "ops": list(self.ops),
+            "case": dict(self.case),
             "impl": self.impl,
             "overrides": [[b, a, list(t)] for b, a, t in self.overrides],
             "images": {name: spec.to_dict() for name, spec in self.images.items()},
@@ -77,7 +86,7 @@ class Job(NamedTuple):
             repeats=data["repeats"],
             warmup=data["warmup"],
             blocks=tuple(data["blocks"]),
-            ops=tuple(data["ops"]),
+            case=dict(data["case"]),
             impl=data["impl"],
             overrides=tuple((b, a, list(t)) for b, a, t in data["overrides"]),
             images={

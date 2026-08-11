@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from ngio_benchmarks.core.data import load_source
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from ngio_benchmarks.core.images import ImageSpec
@@ -32,6 +33,28 @@ def target(root: Path, impl: str, spec: ImageSpec) -> Path:
     if path.exists():
         shutil.rmtree(path)
     return path
+
+
+def fresh(path: Path) -> Callable[[], None]:
+    """A `Measured.setup` that empties `path` before every timed run.
+
+    Without it, a writer measured `repeats` times does not do the same work
+    `repeats` times. The first run writes into an empty directory; every later
+    one first has to dispose of the store the previous run left, and the writers
+    disagree about how -- `zarr.open_group(mode="w")`, `overwrite=True`, an
+    `rmtree` of a few thousand chunk files. That cost lands inside the timed
+    region for runs 2..n and not for run 1, so it both inflates the number and
+    makes it depend on `repeats`.
+
+    `compare.io._ops.target` already refuses to let two implementations share a
+    store, for the same reason at a different scale: writing over existing
+    chunks is not the operation being measured.
+    """
+
+    def clear() -> None:
+        shutil.rmtree(path, ignore_errors=True)
+
+    return clear
 
 
 def scale_factors(spec: ImageSpec, *, explicit_ones: bool = False) -> list[dict]:
@@ -109,6 +132,88 @@ def _render(shapes: list[tuple[int, ...]]) -> str:
     return " | ".join("x".join(str(e) for e in shape[-3:] if True) for shape in shapes)
 
 
+def _level_zero(path: Path) -> dict:
+    """The metadata document of the largest array under `path`.
+
+    Level 0, found by size rather than by name, because the writers do not agree
+    where it lives. Returns `{}` when nothing readable is there.
+    """
+    best, largest = {}, -1
+    for entry in path.rglob("*"):
+        if entry.name not in (".zarray", "zarr.json"):
+            continue
+        try:
+            data = json.loads(entry.read_text())
+        except (OSError, ValueError):
+            continue
+        if entry.name == "zarr.json" and data.get("node_type") != "array":
+            continue
+        shape = data.get("shape")
+        if shape and _volume(tuple(shape)) > largest:
+            best, largest = data, _volume(tuple(shape))
+    return best
+
+
+def _codec(meta: dict) -> str:
+    """The compression the store actually used, named as its metadata names it.
+
+    Read off disk for the same reason the pyramid is: what a writer was asked
+    for and what it did are different claims, and only one of them is checkable.
+    This column exists because five of the six writers used to ignore the
+    requested codec entirely and fall back to their own default -- which is
+    invisible in a timing and shows up only as a store that is a third smaller.
+
+    zarr v2 puts one `compressor` object in `.zarray`; v3 puts a `codecs` list in
+    `zarr.json`, where the compressor sits after `bytes` and, when sharded,
+    inside the sharding codec's configuration.
+    """
+    if "compressor" in meta:  # zarr v2
+        compressor = meta["compressor"]
+        if not compressor:
+            return "none"
+        name = compressor.get("id", "?")
+        cname = compressor.get("cname")
+        level = compressor.get("clevel", compressor.get("level"))
+        return f"{name}{f'/{cname}' if cname else ''}{f'/{level}' if level else ''}"
+
+    codecs = meta.get("codecs") or []
+    for codec in codecs:
+        if codec.get("name") == "sharding_indexed":
+            codecs = codec.get("configuration", {}).get("codecs", [])
+            break
+    for codec in codecs:
+        name = codec.get("name")
+        if name in ("bytes", "transpose", "crc32c", "sharding_indexed"):
+            continue
+        config = codec.get("configuration") or {}
+        cname = config.get("cname")
+        level = config.get("clevel", config.get("level"))
+        return f"{name}{f'/{cname}' if cname else ''}{f'/{level}' if level else ''}"
+    return "none" if codecs else ""
+
+
+def _grid(meta: dict) -> tuple[str, str]:
+    """Level 0's chunk shape and shard shape, as written.
+
+    Two writers given the same chunk shape can still produce different stores if
+    one of them silently dropped the sharding it was asked for -- which is a
+    thing that happens, and is worth a column rather than a surprise.
+    """
+    if "chunks" in meta:  # zarr v2, which cannot shard
+        return "x".join(str(c) for c in meta["chunks"]), ""
+
+    grid = (meta.get("chunk_grid") or {}).get("configuration") or {}
+    outer = grid.get("chunk_shape") or []
+    inner = outer
+    for codec in meta.get("codecs") or []:
+        if codec.get("name") == "sharding_indexed":
+            inner = (codec.get("configuration") or {}).get("chunk_shape") or outer
+            break
+    chunks = "x".join(str(c) for c in inner)
+    shards = "x".join(str(c) for c in outer) if inner != outer else ""
+    return chunks, shards
+
+
 def _declared(path: Path) -> int:
     """How many datasets the store's own NGFF metadata declares."""
     for meta in (*path.rglob(".zattrs"), *path.rglob("zarr.json")):
@@ -144,6 +249,9 @@ def audit(path: Path, spec: ImageSpec | None = None) -> dict[str, str]:
     * `level_shapes` -- their shapes, so a pyramid that halved the wrong axes
       is visible even when the level count is right.
     * `pyramid` -- `as asked`, or the divergence spelled out.
+    * `codec`, `chunks`, `shards` -- how level 0 was actually stored. Two
+      writers can build the identical pyramid and still produce stores that
+      differ by a third in size, and when they do it is one of these three.
     """
     if not path.exists():
         return {"levels": "0"}
@@ -153,7 +261,15 @@ def audit(path: Path, spec: ImageSpec | None = None) -> dict[str, str]:
     if declared and declared != written:
         levels = f"{written} (metadata declares {declared})"
 
-    audited = {"levels": levels, "level_shapes": _render(shapes)}
+    meta = _level_zero(path)
+    chunks, shards = _grid(meta)
+    audited = {
+        "levels": levels,
+        "level_shapes": _render(shapes),
+        "codec": _codec(meta),
+        "chunks": chunks,
+        "shards": shards,
+    }
     if spec is not None:
         # Compared on the trailing three axes only. A writer whose data model
         # is 5D pads a 4D request with a leading singleton -- iohub does -- and

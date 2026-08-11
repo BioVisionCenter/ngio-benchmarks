@@ -13,7 +13,7 @@ from __future__ import annotations
 import csv
 import platform
 import sys
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ngio_benchmarks.core.measure import OK
 
@@ -22,6 +22,30 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ngio_benchmarks.core.measure import Result
+
+
+#: The measurement columns, identical in every suite and spliced into each
+#: schema rather than retyped, so the three files stay comparable and a column
+#: added here reaches all of them.
+#:
+#: `seconds` is the median and the rest is what it is a median of. The two
+#: memory columns are not interchangeable: `peak_mb` is what `tracemalloc`
+#: accounted for inside the case, `proc_peak_mb` is the OS high-water mark for
+#: the whole process, and `rss_base_mb` is that mark taken *before* the case ran
+#: -- so `proc_peak_mb - rss_base_mb` is the case's cost and `rss_base_mb`
+#: alone is what merely loading that library costs.
+MEASUREMENT_FIELDS = (
+    "seconds",
+    "seconds_mad",
+    "seconds_min",
+    "seconds_max",
+    "repeats",
+    "cpu_seconds",
+    "peak_mb",
+    "proc_peak_mb",
+    "rss_base_mb",
+    "loadavg",
+)
 
 
 class Schema(NamedTuple):
@@ -59,14 +83,26 @@ def version(package: str) -> str:
     By distribution metadata rather than `module.__version__`, so a peer that
     does not expose one still gets recorded. Which version produced a number is
     not decoration here: a comparison table is worthless without it.
+
+    Total, including on the empty name: a caller asking after something that has
+    no package at all -- zarr-python's own codec pipeline, which is not a
+    separate install -- wants the same blank cell as a package that is absent,
+    and `importlib.metadata` raises a `ValueError` for that one.
     """
     from importlib.metadata import PackageNotFoundError
     from importlib.metadata import version as _version
 
+    if not package:
+        return ""
     try:
         return _version(package)
     except PackageNotFoundError:
         return ""
+
+
+def _number(value: float, places: int) -> str:
+    """Render a float, or the empty string for the NaN that means "no number"."""
+    return "" if value != value else f"{value:.{places}f}"
 
 
 def as_row(result: Result, schema: Schema, env: dict[str, str]) -> dict[str, str]:
@@ -77,6 +113,11 @@ def as_row(result: Result, schema: Schema, env: dict[str, str]) -> dict[str, str
     per axis and are already what a config file speaks, so a CSV cell and a
     config token are the same token, and
     `df.pivot(index="image", columns="impl", values="seconds")` is a one-liner.
+
+    `seconds` is the median, and the columns beside it are the rest of the
+    distribution rather than decoration: `seconds_min`/`seconds_max` bound it,
+    `seconds_mad` widths it, and `repeats` says how many runs any of that came
+    from. A reader who wants their own estimator has the numbers to build one.
     """
     row = dict.fromkeys(schema.fields, "")
     row.update(env)
@@ -84,12 +125,13 @@ def as_row(result: Result, schema: Schema, env: dict[str, str]) -> dict[str, str
         {
             schema.group: result.case.block,
             "case": result.case.label,
-            "seconds": ""
-            if result.seconds != result.seconds
-            else f"{result.seconds:.6f}",
-            "peak_mb": ""
-            if result.peak_mb != result.peak_mb
-            else f"{result.peak_mb:.3f}",
+            "seconds": _number(result.seconds, 6),
+            "seconds_mad": _number(result.mad, 6),
+            "seconds_min": _number(result.low, 6),
+            "seconds_max": _number(result.high, 6),
+            "cpu_seconds": _number(result.cpu_seconds, 6),
+            "repeats": str(result.repeats) if result.repeats else "",
+            "peak_mb": _number(result.peak_mb, 3),
             "status": result.status,
             "note": result.note,
         }
@@ -139,6 +181,51 @@ def read_csv(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def duration(seconds: float) -> str:
+    """A time, in whichever unit keeps it readable at a glance.
+
+    Milliseconds up to a minute and seconds beyond it, rather than one unit
+    everywhere: these suites span a chunk read and a pyramid build, and neither
+    `0.3 ms` as `0.000` seconds nor a 90-second build as `90000.0 ms` is a
+    number anyone can compare by eye.
+    """
+    if seconds != seconds:
+        return ""
+    if seconds >= 60:
+        return f"{seconds:.1f} s"
+    return f"{seconds * 1000:.1f} ms"
+
+
+def spread(mad: float, low: float, high: float, repeats: int) -> str:
+    """The run-to-run width beside a median, or why there is not one.
+
+    Three cases, and they are different claims:
+
+    * `n=1` -- one timed run. There is no spread, and printing `+/- 0.0` would
+      assert a precision that was never measured. This is what the shipped
+      reference config used to produce for every row.
+    * `+/- <half-range>` at n=2, because a median absolute deviation of two
+      points is half their gap anyway and the range is the honest name for it.
+    * `+/- <mad>` at n>=3, with a relative percentage appended once it passes
+      5% -- the point at which a comparison between two columns starts being
+      about the machine rather than about the libraries.
+    """
+    if repeats <= 1:
+        return "n=1"
+    if repeats == 2:
+        return f"± {duration((high - low) / 2)}"
+    text = f"± {duration(mad)}"
+    median_ish = (low + high) / 2
+    if median_ish > 0 and mad / median_ish > 0.05:
+        text += f" ({mad / median_ish:.0%})"
+    return text
+
+
+def megabytes(value: float) -> str:
+    """A MiB figure, or `n/a` for the NaN that means "not accountable here"."""
+    return "n/a" if value != value else f"{value:.1f} MB"
+
+
 def report(results: list[Result]) -> None:
     """Print one table per block, for a single-environment run."""
     if not results:
@@ -150,132 +237,242 @@ def report(results: list[Result]) -> None:
         if r.case.block != current:
             current = r.case.block
             print(f"\n{current}")
-            print(f"  {'case':<{width}} {'median':>11} {'peak RAM':>13}  note")
-            print(f"  {'-' * width} {'-' * 11} {'-' * 13}  ----")
+            print(
+                f"  {'case':<{width}} {'median':>11} {'spread':>13} "
+                f"{'peak RAM':>11}  note"
+            )
+            print(f"  {'-' * width} {'-' * 11} {'-' * 13} {'-' * 11}  ----")
         if r.status != OK:
-            print(f"  {r.case.label:<{width}} {r.status:>11} {'':>13}  {r.note}")
+            print(
+                f"  {r.case.label:<{width}} {r.status:>11} {'':>13} {'':>11}  {r.note}"
+            )
             continue
-        seconds = f"{r.seconds * 1000:>8.1f} ms" if r.seconds == r.seconds else " " * 11
-        peak = f"{r.peak_mb:>10.1f} MB" if r.peak_mb == r.peak_mb else f"{'n/a':>13}"
-        print(f"  {r.case.label:<{width}} {seconds} {peak}  {r.note}")
+        print(
+            f"  {r.case.label:<{width}} {duration(r.seconds):>11} "
+            f"{spread(r.mad, r.low, r.high, r.repeats):>13} "
+            f"{megabytes(r.peak_mb):>11}  {r.note}"
+        )
     print()
 
 
-#: Width of one comparison column, matching the data cell rendered below:
-#: 10 chars + " ms" + space + 7 chars + " MB".
-_COL = 24
+def _float(row: dict[str, str], field: str) -> float:
+    """One CSV cell as a float, NaN when it is blank."""
+    try:
+        return float(row.get(field) or "nan")
+    except ValueError:
+        return float("nan")
 
 
-def _short(label: str) -> str:
-    """Shorten a label for display; the CSV always keeps the full string."""
-    return label if len(label) <= _COL else label[: _COL - 1] + "…"
+#: The columns of the comparison table, as `(heading, width, how to render it)`.
+#:
+#: A list rather than an f-string per row so that the header, the rule and the
+#: cells cannot drift apart -- which they had, leaving a `vs <base>` heading
+#: over a ratio that was not against the base.
+_COLUMNS: tuple[tuple[str, int, Any], ...] = (
+    ("median", 11, lambda r: duration(_float(r, "seconds"))),
+    (
+        # Wide enough for the worst honest cell, `± 1000.0 ms (27%)`. The
+        # percentage only appears on the rows that need it, and those are the
+        # rows nobody should have to count characters to read.
+        "spread",
+        17,
+        lambda r: spread(
+            _float(r, "seconds_mad"),
+            _float(r, "seconds_min"),
+            _float(r, "seconds_max"),
+            int(r.get("repeats") or 0),
+        ),
+    ),
+    ("peak RAM", 10, lambda r: megabytes(_float(r, "peak_mb"))),
+    ("peak RSS", 10, lambda r: megabytes(_float(r, "proc_peak_mb"))),
+    ("store", 10, lambda r: _size(r.get("bytes"))),
+)
+
+#: Appended only when some row's CPU time diverges from its wall-clock, which is
+#: what "this one used threads" looks like. Always-on it would be a column of
+#: ratios near 1.0 that nobody reads; never it would leave the most interesting
+#: difference between these writers invisible.
+_CPU = ("cpu/wall", 9, lambda r: _ratio(_float(r, "cpu_seconds"), _float(r, "seconds")))
+
+#: Suite-specific trailing columns, printed when the rows carry them. Named
+#: rather than detected by position so a schema change cannot silently reorder
+#: the table.
+_EXTRA = {
+    "levels": ("lvl", 5),
+    "pyramid": ("pyramid", 10),
+    "codec": ("codec", 14),
+    "checksum": ("checksum", 13),
+}
+
+
+def _fit(value: str, width: int) -> str:
+    """Pad or truncate to `width`. The CSV always keeps the full string.
+
+    Truncated rather than allowed to push the rest of the row sideways: the
+    `pyramid` cell spells out the whole divergence when a writer produced
+    something else, which is exactly right in a file and ruins a table.
+    """
+    if len(value) > width:
+        return value[: width - 1] + "…"
+    return f"{value:<{width}}"
+
+
+def _size(value: str | None) -> str:
+    """A byte count as MiB, or blank."""
+    if not value:
+        return ""
+    return f"{int(value) / (1024 * 1024):.1f} MiB"
+
+
+def _ratio(numerator: float, denominator: float) -> str:
+    """`numerator/denominator` as `1.83x`, or blank when either is missing."""
+    if numerator != numerator or denominator != denominator or not denominator:
+        return ""
+    return f"{numerator / denominator:.2f}x"
 
 
 def report_matrix(rows: list[dict[str, str]], schema: Schema) -> None:
-    """Print one table per block, a column per environment or implementation.
+    """Print one table per operation: a row per implementation and variant.
 
-    The trailing ratio is against the first column that actually produced data.
-    A column that failed to install still has rows recording the failure, so it
-    must be excluded from that choice or every ratio would be taken against an
-    environment that never ran.
+    Long rather than wide. The table used to put one column per implementation
+    and one row per case, which reads beautifully right up to the point where
+    the implementations stop having the same cases -- and with `method` and
+    `[options.<impl>]` they do not. ngio's `mode=numpy` has no counterpart
+    column in ngff-zarr, so a wide table spends most of its width on `—`.
+
+    Grouped by operation, then by image, so everything inside one block is
+    directly comparable and the ratio at the end means something. That ratio is
+    per row against the first row that produced a number: an implementation that
+    failed to install still has rows recording the failure, and anchoring on one
+    of those would divide by an environment that never ran.
     """
     key, group = schema.column, schema.group
-    columns: list[str] = []
     blocks: list[str] = []
     for row in rows:
-        if row[key] not in columns:
-            columns.append(row[key])
         if row[group] not in blocks and row[group] != "-":
             blocks.append(row[group])
     if not blocks:
         print(f"\nno results: every {key} failed to run\n")
         return
 
-    index = {(r[key], r[group], r["case"]): r for r in rows}
-    # A column earns the right to anchor the ratio only by producing a number.
-    # An environment that failed to install still has rows recording that, and
-    # an implementation may be present with every case `unsupported`; ratios
-    # against either would be taken against a column that never ran.
-    measured = [
-        c
-        for c in columns
-        if any(
-            r[key] == c and r[group] != "-" and r.get("status", OK) == OK for r in rows
-        )
-    ]
-    base = measured[0] if measured else columns[0]
-    last = measured[-1] if measured else None
-
     for block in blocks:
-        cases: list[str] = []
-        for row in rows:
-            if row[group] == block and row["case"] not in cases:
-                cases.append(row["case"])
-        width = max(len(c) for c in cases)
-        head = f"vs {_short(base)}"
-
-        print(f"\n{block}")
-        print(
-            f"  {'case':<{width}}"
-            + "".join(f" {_short(c):>{_COL}}" for c in columns)
-            + f" {head:>12}"
-        )
-        print(
-            f"  {'-' * width}"
-            + "".join(f" {'-' * _COL}" for _ in columns)
-            + f" {'-' * 12}"
-        )
-
-        for case in cases:
-            line = f"  {case:<{width}}"
-            seconds: dict[str, float] = {}
-            for column in columns:
-                row = index.get((column, block, case))
-                if row is None:
-                    # Not selected by this config. Distinct from a cell that
-                    # ran and could not produce a number -- in a comparison
-                    # table an unlabelled blank is a claim.
-                    line += f" {'—':>{_COL}}"
-                    continue
-                if row.get("status", OK) != OK or not row["seconds"]:
-                    line += f" {row.get('status', 'failed'):>{_COL}}"
-                    continue
-                seconds[column] = float(row["seconds"])
-                # An empty peak means tracemalloc could not account for this
-                # implementation, not that it allocated nothing. `n/a` says so;
-                # `0.0 MB` would have been a claim.
-                peak = (
-                    f"{float(row['peak_mb']):>7.1f} MB" if row["peak_mb"] else "    n/a"
-                )
-                line += f" {seconds[column] * 1000:>10.1f} ms {peak}"
-            if base in seconds and last in seconds and last != base:
-                line += f" {seconds[last] / seconds[base]:>11.2f}x"
-            print(line)
-    _report_process_peaks(rows, key)
+        here = [r for r in rows if r[group] == block]
+        for image in _distinct(here, "image"):
+            _table(
+                [r for r in here if r.get("image", "") == image], schema, block, image
+            )
+    _report_baselines(rows, key)
     print()
 
 
-def _report_process_peaks(rows: list[dict[str, str]], key: str) -> None:
-    """Print the peak RSS of each child process, once, under the tables.
-
-    Per process rather than per case, because that is what it honestly is: the
-    OS high-water mark only rises, so a per-case delta is exact the first time
-    and reads zero afterwards. One number per column is coarse, but it is the
-    only memory figure that exists at all for an implementation whose buffers
-    never pass through the Python allocator -- and for those it is the number
-    that answers "will this fit".
-
-    Absolute, not a delta: it includes the interpreter and the library's own
-    import footprint, which is part of what running that implementation costs.
-    """
-    peaks: dict[str, str] = {}
+def _distinct(rows: list[dict[str, str]], field: str) -> list[str]:
+    """The values of `field`, in the order they first appear."""
+    seen: list[str] = []
     for row in rows:
-        value = row.get("proc_peak_mb")
-        if value and row[key] not in peaks:
-            peaks[row[key]] = value
-    if not peaks:
+        value = row.get(field, "")
+        if value not in seen:
+            seen.append(value)
+    return seen
+
+
+def _table(rows: list[dict[str, str]], schema: Schema, block: str, image: str) -> None:
+    """One table: rows are `(impl, variant)`, columns are measurements."""
+    key = schema.column
+    columns = list(_COLUMNS)
+    if any(
+        _ratio(_float(r, "cpu_seconds"), _float(r, "seconds")) not in ("", "1.00x")
+        and abs(_float(r, "cpu_seconds") - _float(r, "seconds"))
+        > 0.2 * _float(r, "seconds")
+        for r in rows
+    ):
+        columns.append(_CPU)
+    trailing = [
+        (field, *_EXTRA[field])
+        for field in _EXTRA
+        if any(r.get(field) for r in rows) and field in schema.fields
+    ]
+
+    names = _width(rows, key, len(key))
+    # Dropped when nothing varies -- every row of `compare-io` -- rather than
+    # printed as a column of blanks under a heading promising a distinction.
+    variants = (
+        _width(rows, "variant", len("variant"))
+        if any(r.get("variant") for r in rows)
+        else 0
+    )
+    # The first row with a number anchors the ratio. Rows are already in the
+    # order the config named the implementations, so this is the first one the
+    # config asked for that actually ran -- not whichever finished first.
+    base = next((_float(r, "seconds") for r in rows if r.get("status") == OK), None)
+
+    title = f"\n{block}"
+    if image:
+        title += f"   image={image}"
+    repeats = {r.get("repeats") for r in rows if r.get("repeats")}
+    if len(repeats) == 1:
+        title += f"   repeats={repeats.pop()}"
+    print(title)
+
+    head = f"  {key:<{names}}" + (f"  {'variant':<{variants}}" if variants else "")
+    rule = f"  {'-' * names}" + (f"  {'-' * variants}" if variants else "")
+    for heading, width, _ in columns:
+        head += f" {heading:>{width}}"
+        rule += f" {'-' * width}"
+    for _, heading, width in trailing:
+        head += f"  {heading:<{width}}"
+        rule += f"  {'-' * width}"
+    if base:
+        head += f" {'vs first':>9}"
+        rule += f" {'-' * 9}"
+    print(head)
+    print(rule)
+
+    for row in rows:
+        line = f"  {row[key]:<{names}}" + (
+            f"  {row.get('variant', ''):<{variants}}" if variants else ""
+        )
+        if row.get("status", OK) != OK or not row.get("seconds"):
+            # A status, never a blank. The four of them are different claims --
+            # see `core.measure` -- and an unlabelled gap in a comparison reads
+            # as a result.
+            span = sum(width for _, width, _ in columns) + len(columns) - 1
+            status = row.get("status", "failed")
+            print(f"{line} {status:>{span}}  {row.get('note', '')}")
+            continue
+        for _, width, render in columns:
+            line += f" {render(row):>{width}}"
+        for field, _, width in trailing:
+            line += f"  {_fit(row.get(field, ''), width)}"
+        if base:
+            line += f" {_ratio(_float(row, 'seconds'), base):>9}"
+        print(line)
+
+
+def _width(rows: list[dict[str, str]], field: str, floor: int) -> int:
+    """Column width for `field`, never narrower than its heading."""
+    return max([floor, *(len(r.get(field, "")) for r in rows)])
+
+
+def _report_baselines(rows: list[dict[str, str]], key: str) -> None:
+    """Print what each implementation cost before it did anything.
+
+    `rss_base_mb` is the process high-water mark taken after this environment's
+    imports and after the input was materialised, but before the first timed
+    run. The `peak RSS` column above is the same mark taken at the end, so the
+    difference is what the case itself cost and this is the price of admission.
+
+    Worth separating because for several of these libraries the price of
+    admission is the larger number, and a `peak RSS` column read without it
+    ranks libraries by how much they import.
+    """
+    baselines: dict[str, list[float]] = {}
+    for row in rows:
+        value = _float(row, "rss_base_mb")
+        if value == value:
+            baselines.setdefault(row[key], []).append(value)
+    if not baselines:
         return
-    print("\npeak RSS per process (includes interpreter and imports)")
-    width = max(len(name) for name in peaks)
-    for name, value in peaks.items():
-        print(f"  {name:<{width}}  {float(value):>8.1f} MB")
+    print("\nbaseline RSS before measuring (interpreter, imports, input array)")
+    width = max(len(name) for name in baselines)
+    for name, values in baselines.items():
+        print(f"  {name:<{width}}  {min(values):>8.1f} MB")

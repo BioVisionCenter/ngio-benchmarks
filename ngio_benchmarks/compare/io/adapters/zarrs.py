@@ -6,15 +6,16 @@ only difference is who decodes the chunks. That is exactly what makes the pair
 worth having -- the delta between these two columns is the codec pipeline and
 nothing else.
 
-Set once at build time rather than around the timed callable, because
-`zarr.config.set` is a context the pipeline is chosen from at array-open time,
-and toggling it inside the measurement would time the toggle.
+An implementation here and an axis in `compare-create`, where five different
+libraries sit above the pipeline rather than one module. `compare._pipeline`
+holds the pin, the format restriction and the reasoning that both share.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ngio_benchmarks.compare import _pipeline
 from ngio_benchmarks.compare.io.adapters import zarr_python
 
 if TYPE_CHECKING:
@@ -25,20 +26,18 @@ if TYPE_CHECKING:
 
 NAME = "zarrs"
 DISTRIBUTION = "zarrs"
-REQUIRES = ("zarr>=3.1.6", "zarrs>=0.2.3", "numpy>=2")
+REQUIRES = ("zarr>=3.1.6", *_pipeline.REQUIRES[NAME], "numpy>=2")
 SUPPORTS = zarr_python.SUPPORTS
 #: zarrs implements the zarr v3 codec pipeline. There is no v2 equivalent to
 #: replace, so a v2 image here would silently measure plain zarr-python twice.
-FORMATS = frozenset({3})
+FORMATS = _pipeline.FORMATS[NAME]
 #: The codec pipeline is Rust, so the decoded chunks are allocated
 #: outside Python and `tracemalloc` under-reports this column.
-NATIVE = True
+NATIVE = NAME in _pipeline.NATIVE
 PYTHON = None
 
 
 def build(op: str, spec: ImageSpec, root: Path) -> Measured:
     """Install the zarrs pipeline, then defer to the zarr adapter."""
-    import zarr
-
-    zarr.config.set({"codec_pipeline.path": "zarrs.ZarrsCodecPipeline"})
+    _pipeline.install(NAME)
     return zarr_python.build(op, spec, root, impl=NAME)

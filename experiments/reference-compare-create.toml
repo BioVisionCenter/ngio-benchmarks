@@ -7,15 +7,15 @@
 #   uv run ngio-bench-compare-create experiments/reference-compare-create.toml --list
 #
 # Run `--list` before any real sweep: six environments install before the first
-# measurement.
+# measurement, and each case now gets its own child process.
 #
-# Read this suite's output with the `pyramid`, `level_shapes`, `bytes` and
-# `downsample` columns in hand, not the timing alone. These libraries disagree
-# about the downsampling filter, the default chunking, and which metadata they
-# write, so a writer that finished first may not have written the same
-# artefact. Those columns are read back off disk rather than taken from what
-# the writer was asked for, precisely so a writer that quietly produced
-# something smaller does not look fast.
+# Read this suite's output with the `pyramid`, `codec` and `store` columns in
+# hand, not the timing alone. These libraries disagree about the downsampling
+# filter, the default chunking, the codec, and which metadata they write, so a
+# writer that finished first may not have written the same artefact. Those
+# columns are read back off disk rather than taken from what the writer was
+# asked for, precisely so a writer that quietly produced something smaller does
+# not look fast.
 #
 # `pyramid` is the one to check first. It says `as asked` when the level shapes
 # match what the image spec requested, and spells out the divergence when they
@@ -26,13 +26,19 @@
 # what makes the timings comparable at all. `acquire-zarr` cannot be pinned —
 # its streaming writer exposes the filter and the depth but not the axes — so
 # it reports `differs` and prints the shapes it really wrote.
+#
+# Four things that used to be invisible are now axes rather than assumptions:
+# the downsampling filter (`method`), the codec pipeline (`pipeline`), each
+# library's own settings ([options.<impl>]), and the codec (`compressors` on the
+# image spec). Left alone, all four keep the behaviour this suite had before
+# they existed.
 
 
 # ===========================================================================
 # Settings
 # ===========================================================================
 
-# --- the two axes ----------------------------------------------------------
+# --- the axes --------------------------------------------------------------
 
 # Which writers to compare. Default: all of them.
 #
@@ -48,15 +54,70 @@
 # Which images to build a pyramid from. Default: ["medium"].
 # The spec's `levels` is how many resolution levels are requested; `chunks`,
 # `shards` and `compressors` are passed to each writer where it accepts them.
-image = ["small"] #, "large"]
+image = ["small", "medium", "large", "timelapse_image"]
 
 # The single operation, present so both comparison suites share a runner.
 # op = ["create_pyramid"]
 
+# Which downsampling to ask every writer for. Default: ["default"].
+#
+# This is the axis that decides whether the table compares writers or filters.
+# Left at `default`, each library uses whatever it does untold, and those are
+# not the same operation — ngff-zarr's itkwasm gaussian against ome-zarr-py's
+# anti-aliased resize against bioio's order-0 decimation. That is worth
+# measuring, but it is a comparison of filters wearing the libraries' names.
+#
+#   default   whatever the library does when not told — the question this
+#             suite started from, and still the default
+#   mean      a box mean. Every writer here but bioio has one
+#   nearest   decimation. Every writer here has one
+#   linear    interpolating resize; ngio and ome-zarr-py only
+#   gaussian  ngff-zarr only
+#
+# A value a writer cannot express is `unsupported` for that row rather than
+# quietly served by its default. The `method_native` column records what each
+# library was actually handed.
+#
+# Sweep ["mean", "nearest"] for the like-for-like comparison.
+#
+method = ["mean", "nearest", "linear", "gaussian"]
+
+# Which codec pipeline encodes the chunks. Default: ["zarr-python"].
+#
+#   zarr-python   zarr-python's own pipeline — what every column did before
+#                 this axis existed
+#   zarrs         the `zarrs` Rust pipeline, installed process-wide through
+#                 `zarr.config` and picked up by whichever library is writing
+#
+# This is the second axis that is not a property of any one library. `zarrs`
+# replaces zarr-python's codec pipeline, so it applies to ngio, ome-zarr-py,
+# bioio and ngff-zarr at once, and the delta between a writer's two rows is the
+# pipeline and nothing else. Check `codec`, `chunks` and `store` are unchanged
+# across the pair before reading the timing: zarrs falls back to zarr-python for
+# patterns it cannot take, and a silent fallback is a row that measured
+# zarr-python under a `zarrs` label.
+#
+# Three columns sit it out, each for its own reason and each said so in the
+# `unsupported` note: `acquire-zarr` has no zarr-python in its path; `iohub`
+# picks its zarr stack through its own registry ([options.iohub] implementation
+# below); and any zarr **v2** image, because zarrs implements the v3 codec
+# pipeline and there is no v2 equivalent to replace.
+#
+# Not swept by default, like an [options] table and unlike `method`: it doubles
+# every column at once, and a config that did not ask for it should install and
+# measure exactly what it did before.
+#
+pipeline = ["zarr-python", "zarrs"]
+
 # --- measurement -----------------------------------------------------------
 
 # Timed runs per case. Default: 3, since building a pyramid is not cheap.
-repeats = 1
+#
+# Below 3 there is no run-to-run spread to report and the `spread` column says
+# `n=1` rather than inventing one. A single sample of a pyramid build on a
+# laptop is not a measurement anyone should compare against another single
+# sample, so `--list` warns when this is set below 3.
+repeats = 3
 
 # Untimed runs before the timed ones. Default: 1.
 #
@@ -66,7 +127,12 @@ repeats = 1
 # separate phases because tracemalloc inflates allocation-heavy code and would
 # otherwise report a time that is not the time. `--list` prints the real
 # `runs/case`, which is what to check before a long sweep.
-warmup = 0
+#
+# The target store is emptied before every one of those runs, outside the
+# timing. Without that, run 1 writes into an empty directory and runs 2..n each
+# begin by disposing of the previous store — a cost that differs per library
+# and lands inside the timed region for every run but the first.
+warmup = 1
 
 # --- output ----------------------------------------------------------------
 
@@ -96,24 +162,99 @@ keep = true
 
 
 # ===========================================================================
+# Options — one writer's own settings, swept
+# ===========================================================================
+#
+# `method` above is the vocabulary every writer shares. This is for the knobs
+# that have no cross-library equivalent, and each table only affects its own
+# rows. Nothing here has a default sweep: an option a config does not name
+# keeps whatever `method` implied, so the matrix stays the size it was.
+#
+# Every value is validated against the adapter's own declaration before any
+# environment installs — `--list` will tell you what a writer accepts.
+
+# ngio names its downsampling by machinery and interpolation order rather than
+# by filter. `numpy` materialises a whole level, so its peak memory tracks the
+# data; `dask` and `coarsen` are chunk-bounded. Only `coarsen` is a true box
+# mean, which is why `method = "mean"` selects it.
+[options.ngio]
+mode  = ["dask", "numpy", "coarsen"]
+# order = ["linear", "nearest", "cubic"]
+
+# `use_tensorstore` is a genuinely different write backend, not a tuning flag.
+# `scale_strategy` chooses between downsampling each level from the one above
+# (`pad`) and reusing the images `to_multiscales` already built (`exact`).
+[options.ngff-zarr]
+use_tensorstore = [false, true]
+# scale_strategy  = ["pad", "exact"]
+
+# Which zarr stack does the encoding. iohub's own default is `zarrs-python`,
+# the Rust codec pipeline, while every other writer in this table encodes
+# through zarr-python — worth naming explicitly, because left implicit it makes
+# iohub's number partly a measurement of zarrs.
+#
+# This is where iohub answers the question the `pipeline` axis above asks of
+# everyone else, which is why it is the one zarr-python writer that declines
+# that axis: `implementation=zarr-python pipeline=zarrs` would be zarrs by a
+# second route, chosen twice in two vocabularies.
+[options.iohub]
+implementation = ["zarr-python", "zarrs-python", "tensorstore"]
+
+# Three ways to feed the same writer. `timepoints` bounds memory by walking the
+# t axis in batches, and needs an image that has one.
+# [options.bioio]
+# writer = ["full_volume", "timepoints"]
+
+# The only first-class thread count in this table. Every other writer's
+# parallelism is whatever its dask scheduler or codec pipeline decided.
+# [options.acquire-zarr]
+# max_threads = [1, 4, 8]
+
+# `method_native` names one library's own filter directly, for the values with
+# no canonical equivalent — iohub's median/min/max/mode, ngff-zarr's remaining
+# `Methods`. Mutually exclusive with `method` above; the row is labelled with
+# whichever one was used.
+#[options.iohub]
+#method_native = ["median", "max"]
+
+
+# ===========================================================================
 # Images — extend the named registry the `image` axis draws from
 # ===========================================================================
 #
-# See reference-internal.toml for the full field list. Two fields are what this
-# suite is really about:
+# See reference-internal.toml for the full field list. Three fields are what
+# this suite is really about:
 #
-#   levels      how many resolution levels to build
-#   downsample  which axes are halved at each level; default ["y", "x"]
+#   levels       how many resolution levels to build
+#   downsample   which axes are halved at each level; default ["y", "x"]
+#   compressors  the codec every writer is told to use
 #
 # `downsample` is the setting that makes the columns comparable. Every writer
 # except acquire-zarr is pinned to it, so changing it here changes the pyramid
 # all of them build, and the `pyramid` column confirms each one complied.
 # Only spatial axes (z, y, x) may be named. The factor is fixed at 2 per level,
 # because several of these writers can express nothing else.
+#
+# `compressors` is the other one, and left at "auto" it is not a setting at all
+# — each library falls back to its own default, which is how identical pixels
+# used to produce stores between 4.2 and 10.0 MB. Pin it and the four writers
+# that take a codec object converge to within a fraction of a percent. iohub
+# and acquire-zarr are blosc-only, so they land near but not on it; the `codec`
+# column is read back off the store and says which is which.
 
 # [images.deep_pyramid]
 # shape       = [1, 64, 2048, 2048]
 # chunks      = [1, 1, 256, 256]
 # levels      = 6
 # downsample  = ["y", "x"]            # or ["z", "y", "x"] for isotropic
+# compressors = "zstd"                # pin it; "auto" is six different codecs
 # zarr_format = 3
+
+
+[images.timelapse_image]
+shape       = [5, 3, 64, 2048, 2048]
+chunks      = [1, 1,  1,  256,  256]
+levels      = 5
+downsample  = ["y", "x"]            # or ["z", "y", "x"] for isotropic
+# compressors = "zstd"                # pin it; "auto" is six different codecs
+zarr_format = 3

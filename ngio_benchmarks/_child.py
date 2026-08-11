@@ -58,7 +58,10 @@ def _compare(job: Job) -> int:
     )
     adapter = importlib.import_module(suite.IMPLS[job.impl])
     results = run(job, suite.IMPLS, getattr(suite, "audit", None))
-    env = environment(adapter, job.label)
+    # `job.impl`, not `job.label`: the label is a progress line naming the whole
+    # case, while the `impl` column is the implementation's name and nothing
+    # else -- it is what the table groups and the CSV pivots on.
+    env = environment(adapter, job.impl)
     write_csv(
         Path(job.out),
         suite.SCHEMA,

@@ -19,10 +19,16 @@ from ngio_benchmarks.core.measure import (
     Result,
     Skip,
     executions,
+    load_average,
     measure,
     process_peak_mb,
 )
-from ngio_benchmarks.core.output import Schema, interpreter, version
+from ngio_benchmarks.core.output import (
+    MEASUREMENT_FIELDS,
+    Schema,
+    interpreter,
+    version,
+)
 from ngio_benchmarks.internal import BLOCKS
 
 if TYPE_CHECKING:
@@ -49,9 +55,7 @@ SCHEMA = Schema(
         "block",
         "case",
         *AXIS_FIELDS,
-        "seconds",
-        "peak_mb",
-        "proc_peak_mb",
+        *MEASUREMENT_FIELDS,
         "status",
         "note",
     ),
@@ -73,7 +77,11 @@ def environment(label: str) -> dict[str, str]:
         "env": label,
         "ngio_version": version("ngio"),
         "zarr": version("zarr"),
+        # Still per process here, unlike the comparison suites: the internal
+        # blocks share fixtures and an interpreter, so this is the high-water
+        # mark across all of them. `peak_mb` is the per-case column.
         "proc_peak_mb": f"{process_peak_mb():.1f}",
+        "loadavg": f"{load_average():.2f}",
         **interpreter(),
     }
 
@@ -142,9 +150,11 @@ def run_blocks(
                 # not the run, and stop retrying it case by case.
                 results.append(Result.blank(case, UNAVAILABLE, f"unavailable: {error}"))
                 break
-            seconds, peak = measure(measured.fn, repeats=repeat, warmup=warmup)
+            timing = measure(
+                measured.fn, repeats=repeat, warmup=warmup, setup=measured.setup
+            )
             results.append(
-                Result(case, seconds, peak, measured.note, extra=measured.extra)
+                Result.timed(case, timing, measured.note, dict(measured.extra))
             )
     return results, skipped
 

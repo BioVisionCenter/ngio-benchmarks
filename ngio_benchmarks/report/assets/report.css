@@ -1,0 +1,994 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   ngio benchmarks — compare-create report
+
+   Colours are ngio's own tokens. The one rule from that system holds here too:
+   fill tokens and text tokens are separate, and a series colour never becomes
+   text. Bars wear the series colour; every label beside them wears ink.
+
+   ── The series palette ────────────────────────────────────────────────────
+   Six implementations, six hues, ngio's brand teal first. Slot order is fixed
+   by the implementation name, never by rank, so hiding a series in the filter
+   row never repaints the survivors.
+
+   Measured against the surfaces below (OKLab ΔE ×100, Machado severity 1.0):
+
+     adjacent pairs   CVD ΔE 14.2 light / 14.0 dark   (target ≥ 8)
+     adjacent pairs   normal ΔE 24.4 light / 18.1 dark (floor ≥ 15)
+     contrast         all six ≥ 3:1 in both modes
+
+   The filter row can hide any subset, so two slots that are not neighbours
+   here can end up neighbours on screen; across ALL pairs the worst is
+   blue↔violet, which collapses under deutan. Six hues that separate under
+   simulated dichromacy do not exist inside these lightness bands — so colour
+   is deliberately a *supporting* channel throughout: every bar is directly
+   labelled with its implementation, the legend is always present, each chart
+   has a table view, and the texture toggle turns on 45°/135° hatching for
+   readers who need identity carried without hue at all.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  color-scheme: light;
+
+  /* ── ngio brand ── */
+  --accent: #22a699;
+  --accent-ink: #16695f;
+  --accent-soft: #e4f4f2;
+
+  /* ── surfaces ── */
+  --paper: #f9fafa;
+  --surface: #ffffff;
+  --sunk: #eff1f1;
+
+  /* ── ink ── */
+  --ink: #101619;
+  --ink-2: #253034;
+  --muted: #566065;
+  --faint: #5b6569;
+
+  /* ── lines ── */
+  --line: #e3e6e6;
+  --line-strong: #cfd4d4;
+  --grid: #e9ecec;
+
+  /* ── series: one hue per implementation ── */
+  --s-ngio: #0c9488;
+  --s-ngff-zarr: #d25117;
+  --s-ome-zarr-py: #3280de;
+  --s-bioio: #db376f;
+  --s-iohub: #766ddf;
+  --s-acquire-zarr: #9c7b21;
+  --s-other: #566065;
+
+  /* ── status: fixed, never themed into a series hue ── */
+  --st-ok: #0ca30c;
+  --st-unsupported: #b8bcbc;
+  --st-unavailable: #ec835a;
+  --st-failed: #d03b3b;
+  --st-warn: #8a6a00;
+
+  --radius-s: 4px;
+  --radius-m: 8px;
+  --radius-l: 12px;
+  --motion: 180ms cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* The brand faces are webfonts, and this page must render with no network
+     at all, so it uses the reader's system stack. The mono-for-metadata motif
+     survives the substitution; a silently-missing webfont would not. */
+  --font-display: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --accent: #6cc8be;
+  --accent-ink: #8fd8d0;
+  --accent-soft: #123330;
+  --paper: #0b1113;
+  --surface: #131b1e;
+  --sunk: #0f1618;
+  --ink: #e6edee;
+  --ink-2: #c2ccce;
+  --muted: #8d999c;
+  --faint: #808d90;
+  --line: #1d272a;
+  --line-strong: #2a3639;
+  --grid: #1a2427;
+  --s-ngio: #008c81;
+  --s-ngff-zarr: #c94901;
+  --s-ome-zarr-py: #2978d5;
+  --s-bioio: #c44273;
+  --s-iohub: #9152d7;
+  --s-acquire-zarr: #917622;
+  --s-other: #8d999c;
+  --st-ok: #0ca30c;
+  --st-unsupported: #3a4548;
+  --st-unavailable: #ec835a;
+  --st-failed: #d03b3b;
+  --st-warn: #c8a63a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --accent: #6cc8be;
+    --accent-ink: #8fd8d0;
+    --accent-soft: #123330;
+    --paper: #0b1113;
+    --surface: #131b1e;
+    --sunk: #0f1618;
+    --ink: #e6edee;
+    --ink-2: #c2ccce;
+    --muted: #8d999c;
+    --faint: #808d90;
+    --line: #1d272a;
+    --line-strong: #2a3639;
+    --grid: #1a2427;
+    --s-ngio: #008c81;
+    --s-ngff-zarr: #c94901;
+    --s-ome-zarr-py: #2978d5;
+    --s-bioio: #c44273;
+    --s-iohub: #9152d7;
+    --s-acquire-zarr: #917622;
+    --s-other: #8d999c;
+    --st-unsupported: #3a4548;
+    --st-warn: #c8a63a;
+  }
+}
+
+/* ── base ─────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 28px 24px 96px;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+h2 {
+  font-size: 19px;
+  letter-spacing: -0.018em;
+}
+h3 {
+  font-size: 15px;
+}
+
+p {
+  margin: 0 0 10px;
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--accent-ink);
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ── header ───────────────────────────────────────────────────────────── */
+
+header.masthead {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.masthead .title {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.masthead h1 .i {
+  color: var(--accent);
+}
+
+.masthead .source {
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+.masthead .tools {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ── provenance ───────────────────────────────────────────────────────── */
+
+.provenance {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 28px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.provenance > li {
+  padding: 6px 0;
+}
+
+.provenance dt {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+
+.provenance dd {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+}
+
+/* ── notices ──────────────────────────────────────────────────────────── */
+
+.notices {
+  margin: 18px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.notice {
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--st-warn);
+  background: var(--surface);
+  border-radius: var(--radius-m);
+  padding: 10px 14px;
+  margin: 0;
+  color: var(--ink-2);
+}
+
+/* ── controls ─────────────────────────────────────────────────────────── */
+
+.controls {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  margin: 20px 0 0;
+  padding: 12px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 18px;
+}
+
+.control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control > label,
+.control > .label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+
+select,
+button,
+summary {
+  font: inherit;
+  color: var(--ink);
+}
+
+select {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  padding: 5px 8px;
+  min-width: 132px;
+}
+
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  padding: 5px 11px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background var(--motion), color var(--motion);
+}
+
+.segmented button + button {
+  border-left: 1px solid var(--line);
+}
+
+.segmented button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.ghost {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: var(--radius-s);
+  padding: 5px 11px;
+  cursor: pointer;
+  transition: border-color var(--motion), color var(--motion);
+}
+
+.ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* filter dropdown: a details/summary popover, so it needs no library */
+.filter {
+  position: relative;
+}
+
+.filter > summary {
+  list-style: none;
+  cursor: pointer;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-s);
+  padding: 5px 10px;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.filter > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter > summary::after {
+  content: " ▾";
+  color: var(--faint);
+}
+
+.filter[open] > summary {
+  border-color: var(--accent);
+}
+
+.filter .menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
+  min-width: 210px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  padding: 6px;
+  box-shadow: 0 6px 20px rgb(16 22 25 / 12%);
+}
+
+.filter .menu label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.filter .menu label:hover {
+  background: var(--sunk);
+}
+
+.filter .menu .menu-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px 2px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+}
+
+.filter .menu .menu-actions button {
+  border: 0;
+  background: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.count {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── view tabs ────────────────────────────────────────────────────────── */
+
+.views {
+  display: flex;
+  gap: 2px;
+  margin: 18px 0 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.views button {
+  border: 0;
+  background: none;
+  padding: 9px 14px;
+  cursor: pointer;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-family: var(--font-display);
+  font-weight: 600;
+  transition: color var(--motion), border-color var(--motion);
+}
+
+.views button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+/* ── cards ────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  padding: 18px 20px 14px;
+  margin: 16px 0 0;
+}
+
+.card > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.card .lede {
+  color: var(--muted);
+  max-width: 66ch;
+  margin: 2px 0 14px;
+}
+
+.plot {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+svg.chart {
+  display: block;
+  min-width: 520px;
+}
+
+svg text {
+  font-family: var(--font-body);
+  fill: var(--muted);
+  font-size: 11px;
+}
+
+svg .axis-label,
+svg .tick {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--faint);
+}
+
+svg .series-label {
+  font-size: 11.5px;
+  fill: var(--ink-2);
+}
+
+svg .value-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  fill: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+svg .group-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  fill: var(--faint);
+}
+
+svg .gridline {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+svg .baseline {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+svg .reference {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: none;
+  opacity: 0.55;
+}
+
+svg .bar {
+  transition: opacity var(--motion);
+}
+
+svg .hit {
+  fill: transparent;
+  cursor: pointer;
+}
+
+svg .row:hover .bar,
+svg .row[data-active="true"] .bar {
+  opacity: 0.78;
+}
+
+svg .row[data-active="true"] .series-label {
+  fill: var(--ink);
+  font-weight: 600;
+}
+
+svg .whisker {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  opacity: 0.55;
+}
+
+svg .ghost-bar {
+  fill: var(--st-unsupported);
+  opacity: 0.5;
+}
+
+svg .peak-mark {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+  opacity: 0.7;
+}
+
+/* ── legend ───────────────────────────────────────────────────────────── */
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 14px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--line);
+  list-style: none;
+}
+
+.legend li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+}
+
+.legend .swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.legend .swatch.line {
+  height: 2px;
+  border-radius: 1px;
+}
+
+.legend-note {
+  color: var(--muted);
+  margin: 8px 0 0;
+  max-width: 66ch;
+}
+
+/* ── coverage matrix ──────────────────────────────────────────────────── */
+
+.matrix {
+  border-collapse: separate;
+  border-spacing: 2px;
+  width: 100%;
+}
+
+.matrix th {
+  font-weight: 500;
+  color: var(--muted);
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  padding: 4px 6px;
+  vertical-align: bottom;
+}
+
+.matrix th[scope="row"] {
+  vertical-align: middle;
+}
+
+.matrix .row-head {
+  text-align: left;
+  white-space: nowrap;
+  font-family: var(--font-body);
+  font-size: 12px;
+  letter-spacing: 0;
+  color: var(--ink-2);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.matrix .row-head .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.matrix td {
+  padding: 0;
+}
+
+.cell {
+  width: 100%;
+  min-height: 34px;
+  border-radius: var(--radius-s);
+  border: 1px solid transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 4px 6px;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+  transition: border-color var(--motion);
+}
+
+.cell:hover,
+.cell[data-active="true"] {
+  border-color: var(--accent);
+}
+
+.cell .state {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.cell .metric {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.cell[data-status="ok"] {
+  background: var(--accent-soft);
+}
+.cell[data-status="ok"] .state {
+  color: var(--accent-ink);
+}
+.cell[data-status="unsupported"] {
+  background: var(--sunk);
+}
+.cell[data-status="unsupported"] .state {
+  color: var(--faint);
+}
+.cell[data-status="failed"] {
+  background: color-mix(in srgb, var(--st-failed) 14%, var(--surface));
+}
+.cell[data-status="failed"] .state {
+  color: var(--st-failed);
+}
+.cell[data-status="unavailable"] {
+  background: color-mix(in srgb, var(--st-unavailable) 16%, var(--surface));
+}
+.cell[data-status="unavailable"] .state {
+  color: var(--st-unavailable);
+}
+.cell[data-status="none"] {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--line);
+  cursor: default;
+}
+.cell[data-status="none"] .state {
+  color: var(--faint);
+}
+
+.cell .caveat {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--st-warn);
+}
+
+/* ── tooltip ──────────────────────────────────────────────────────────── */
+
+.tooltip {
+  position: fixed;
+  z-index: 60;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 120ms linear;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  padding: 10px 12px;
+  max-width: 340px;
+  box-shadow: 0 8px 28px rgb(16 22 25 / 16%);
+}
+
+.tooltip[data-show="true"] {
+  opacity: 1;
+  transform: none;
+}
+
+.tooltip .tip-value {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.01em;
+}
+
+.tooltip .tip-series {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-2);
+  margin-top: 1px;
+}
+
+.tooltip .tip-series .key {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+  flex: none;
+}
+
+.tooltip dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+  margin: 9px 0 0;
+  padding: 9px 0 0;
+  border-top: 1px solid var(--line);
+}
+
+.tooltip dt {
+  color: var(--faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  align-self: center;
+}
+
+.tooltip dd {
+  margin: 0;
+  color: var(--ink-2);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.tooltip .tip-note {
+  margin: 9px 0 0;
+  padding: 8px 10px;
+  background: var(--sunk);
+  border-radius: var(--radius-s);
+  color: var(--ink-2);
+}
+
+/* ── table view ───────────────────────────────────────────────────────── */
+
+.table-toggle {
+  margin: 12px 0 0;
+}
+
+details.table-view > summary {
+  cursor: pointer;
+  color: var(--accent-ink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 6px 0;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.data-table th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  font-weight: 500;
+}
+
+.data-table td.num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+
+.data-table .swatch {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  margin-right: 7px;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* ── detail panel ─────────────────────────────────────────────────────── */
+
+.detail {
+  margin: 16px 0 0;
+}
+
+.detail .card {
+  border-color: var(--accent);
+}
+
+.detail .close {
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: var(--radius-s);
+}
+
+.detail .close:hover {
+  color: var(--ink);
+  background: var(--sunk);
+}
+
+.detail dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 20px;
+  margin: 6px 0 0;
+}
+
+.detail dt {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+}
+
+.detail dd {
+  margin: 2px 0 0;
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+.empty {
+  color: var(--muted);
+  padding: 32px 0;
+  text-align: center;
+}
+
+/* Texture is applied per mark in the script (each bar's fill becomes its
+   implementation's pattern), not with a blanket filter here — a page-wide mask
+   would texture the gridlines and the ghost stubs too. */
+
+/* ── motion, print, forced colours ────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}
+
+@media (max-width: 720px) {
+  #app {
+    padding: 20px 14px 72px;
+  }
+  .controls {
+    position: static;
+  }
+}
+
+@media print {
+  .controls,
+  .views,
+  .table-toggle {
+    display: none;
+  }
+  .card {
+    break-inside: avoid;
+  }
+}
+
+@media (forced-colors: active) {
+  .cell,
+  .card,
+  .notice {
+    border: 1px solid CanvasText;
+  }
+}

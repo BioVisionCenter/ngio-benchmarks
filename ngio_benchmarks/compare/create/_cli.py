@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ngio_benchmarks.compare import _pipeline
 from ngio_benchmarks.compare._suite import Suite
 from ngio_benchmarks.compare._suite import main as run_suite
 from ngio_benchmarks.compare.create import IMPLS, OPS, SCHEMA
@@ -34,6 +35,10 @@ SUITE = Suite(
     ops=OPS,
     schema=SCHEMA,
     default_images=("medium",),
+    # The codec pipeline is an axis here and a pair of implementations in
+    # `compare-io`, because there five libraries sit above it and there the
+    # measured code is one module either way. See `compare._pipeline`.
+    pipelines=tuple(_pipeline.PIPELINES),
     prepare=prepare,
 )
 

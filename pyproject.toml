@@ -67,6 +67,11 @@ ngio-bench-internal = "ngio_benchmarks.internal._cli:main"
 ngio-bench-compare-io = "ngio_benchmarks.compare.io._cli:main"
 ngio-bench-compare-create = "ngio_benchmarks.compare.create._cli:main"
 
+# Reading a run back, rather than performing one. Takes a results CSV instead
+# of a config, and understands the compare-create schema only -- the other two
+# suites write different columns and would need different charts.
+ngio-bench-report-create = "ngio_benchmarks.report._cli:main"
+
 # https://docs.astral.sh/ruff
 [tool.ruff]
 line-length = 88

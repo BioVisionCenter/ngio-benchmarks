@@ -184,21 +184,34 @@ It is **blind to allocations a C++ or Rust extension makes on its own**. The
 same 128 MiB read through tensorstore reports 0.0 MB. Implementations in that
 position (`tensorstore`, `z5py`, `zarrs`, `acquire-zarr`) declare `NATIVE = True`
 and their cell prints `n/a` — a `0.0 MB` there would read as "uses no memory",
-which is a claim, and a wrong one.
+which is a claim, and a wrong one. The same applies to a pure-Python library the
+moment its chunks are encoded by the `zarrs` pipeline, so `pipeline = "zarrs"`
+prints `n/a` too: the buffers left tracemalloc's reach whoever called them.
 
-**`proc_peak_mb` — peak RSS of the child process.** The OS high-water mark, so
-it counts every byte including native buffers. Reported once per process, under
-the tables, rather than per case — because RSS only rises. A peak-RSS delta
-around a single call is exact the first time and reads ~0 afterwards, since the
-allocator does not return the pages: measured five times on the same 128 MiB
-read, the first call shows 133.5 MB and every later one shows 0.1 MB. It is
-absolute, including the interpreter and the library's imports, which is part of
-what running that implementation costs.
+**`proc_peak_mb` — peak RSS of the process.** The OS high-water mark, so it
+counts every byte including native buffers. It only ever rises, so a delta
+around a single call is exact the first time and reads ~0 afterwards: measured
+five times on the same 128 MiB read, the first call shows 133.5 MB and every
+later one shows 0.1 MB.
 
-Exact per-case native peaks would need a fresh process per case. That is not
-done: the comparison suites already spawn one process per implementation, and
-one per case would multiply that by the case count for a number only four
-columns need.
+That is why the comparison suites spawn **one child process per case** rather
+than one per implementation. A shared child can only report the largest case it
+ran and then attribute that number to all of them, which with `method` and
+`[options.<impl>]` in the matrix is most of the rows. One process per case costs
+an interpreter start — the environment is already installed and cached — and
+buys a figure that is about the case it is printed next to. It also stops a case
+inheriting the heap, the allocator's free lists and the warmed imports of the
+one before it.
+
+**`rss_base_mb` — the same mark, taken before the case ran.** Read after this
+environment's imports and after the input array was materialised, but before the
+first timed run. So `proc_peak_mb - rss_base_mb` is what the case cost, and
+`rss_base_mb` on its own is the price of admission for that library — which for
+several of them is the larger number. It is printed under the tables, because a
+`peak RSS` column read without it ranks libraries by how much they import.
+
+The `internal` suite still reports `proc_peak_mb` per process: its blocks share
+fixtures and an interpreter, and `peak_mb` is the per-case column there.
 
 ### Comparing versions
 
@@ -276,7 +289,7 @@ records a `checksum` of what it returned, computed once outside the timing.
 ## Suite 3 — `compare-create`
 
 One operation — build a multiscale OME-Zarr from an array in memory — over
-`impl` × `image`.
+`impl` × `image` × `method` × `pipeline` × each writer's own `[options]`.
 
 | impl | what it is |
 | --- | --- |
@@ -317,26 +330,246 @@ Only the axes are configurable; the factor is fixed at 2 per level, because
 several of these writers can express nothing else and a setting only some
 columns could honour is the problem, not the fix.
 
+### The filter has to be pinned too
+
+The pyramid *shape* being pinned is not enough. Left to themselves these writers
+also use four different filters, and the table used to record that as a
+free-text string next to the timing:
+
+| writer | what it really does when not told |
+| --- | --- |
+| `ngff-zarr` | itkwasm gaussian, through a WebAssembly build of ITK |
+| `ome-zarr-py` | anti-aliased order-1 resize |
+| `bioio` | `resize(order=0)` — nearest, no anti-aliasing |
+| `ngio` | dask zoom, order 1 |
+| `iohub`, `acquire-zarr` | 2×2 box mean |
+
+Comparing those is a comparison of filters wearing the libraries' names. So
+`method` is an axis with a canonical vocabulary each adapter translates:
+
+```toml
+method = ["mean", "nearest"]        # like-for-like across all six
+```
+
+| `method` | ngio | ngff-zarr | ome-zarr-py | bioio | iohub | acquire-zarr |
+| --- | --- | --- | --- | --- | --- | --- |
+| `default` | dask/linear | itkwasm gaussian | resize | native | mean | MEAN |
+| `mean` | coarsen/linear | itkwasm bin-shrink | local_mean | — | mean | MEAN |
+| `nearest` | numpy/nearest | dask-image nearest | nearest | native | stride | DECIMATE |
+| `linear` | dask/linear | — | resize | — | — | — |
+| `gaussian` | — | itkwasm gaussian | — | — | — | — |
+
+A value a writer has no equivalent for is `unsupported` for that row, never
+served by its default — a writer answering a request for `nearest` with a
+gaussian would be the fastest kind of wrong. `default` stays the default value,
+because "what does this library do untold" is the question the suite started
+from. `method_native` records what each library was actually handed.
+
+`ome-zarr-py` is the reason this is a declaration and not a `try`: 0.18 accepts
+`gaussian` through the deprecated `Scaler` and *silently downgrades it to
+resize*, so a row labelled gaussian would not have been one.
+
+### The codec pipeline is an axis, not a seventh writer
+
+`zarrs` is the Rust implementation of zarr's codec pipeline. It is not a library
+with an API of its own — it installs a *replacement* for zarr-python's pipeline
+through `zarr.config`, so whichever library is writing picks it up without
+knowing it exists. That makes it a modifier on four of the six columns rather
+than a seventh column:
+
+```toml
+pipeline = ["zarr-python", "zarrs"]     # every writer that goes through zarr-python
+```
+
+The delta between a writer's two rows is the pipeline and nothing else — same
+library, same call, same store. On the smoke image:
+
+| writer | `zarr-python` | `zarrs` | cpu/wall |
+| --- | --- | --- | --- |
+| `ngio` | 144.0 ms | 146.3 ms | 2.03 → 2.06 — *see below, zarrs never engaged* |
+| `ome-zarr-py` | 212.3 ms | 196.8 ms | 1.50 → 1.44 |
+| `bioio` | 108.0 ms | 66.4 ms | 1.10 → 1.37 |
+| `ngff-zarr` | 4228.6 ms | 1121.4 ms | 1.21 → 1.79 |
+
+The gains are smaller here than the ones `zarrs` publishes, and that is the
+suite working rather than failing. Those are raw array reads and writes — this
+one's `compare-io` measures the same shape and lands in the same ballpark (3.9×
+on `read_full`, 2.3× on `write_full`). Building a pyramid also downsamples and
+writes metadata, and the pipeline touches none of that, so the share it can move
+is whatever fraction of the wall clock was encoding. `cpu/wall` is where to see
+it: the writers that sped up are the ones that gained cores, because what zarrs
+brings is a Rust encode parallel across chunks.
+
+Three columns sit it out, each for a different reason and each saying which in
+its `unsupported` note: `acquire-zarr` has no zarr-python anywhere in its path;
+`iohub` picks its zarr stack through its own registry, which is
+`[options.iohub] implementation` below; and any zarr **v2** image, because
+`zarrs` implements the v3 codec pipeline and v2 has nothing to replace — a v2
+row under it would silently measure zarr-python twice.
+
+**The fallback is silent, and the audit columns do not catch it.** `zarrs`
+installs its pipeline only for stores it recognises — `LocalStore`,
+`ObjectStore`, `FsspecStore` — and for anything else zarr-python quietly keeps
+`BatchedCodecPipeline`, with no warning and no error. The store it wrote is
+byte-identical either way, so `codec`, `chunks`, `store` and `pyramid` all match
+across the pair whether or not the swap happened. The tell is in the timing
+itself: **wall *and* CPU seconds both unchanged** means the same code ran.
+
+`ngio` is the case in point, and the reason its two rows above are within noise.
+It wraps every store in `NgioStore`, a `zarr.storage.WrapperStore` subclass
+carrying its retry logic, and there is no way to pass a raw `LocalStore` through
+`create_empty_ome_zarr` — a `Path`, a `str` and a `LocalStore` all arrive
+wrapped. zarrs therefore never engages, and ngio's `pipeline=zarrs` row is
+zarr-python wearing a zarrs label. That is a fact about the store wrapper rather
+than about ngio's writing, and it is the one row in this table to read with the
+mechanism in mind.
+
+`peak RAM` is blank on those rows for the same reason it is blank for
+`acquire-zarr`: the chunks are encoded in Rust buffers `tracemalloc` cannot see,
+and a `0.0` would read as "uses no memory" rather than "not measurable here".
+`peak RSS` still applies.
+
+Not swept by default, unlike `method`: it doubles every column at once, and a
+config that did not name it installs and measures exactly what it did before the
+axis existed. `compare-io` asks the same question as a pair of implementations
+(`zarr` against `zarrs`) rather than as an axis, because there the measured code
+is one module either way; `compare._pipeline` holds what both share.
+
+### Each writer's own settings
+
+Knobs with no cross-library equivalent are declared per adapter and swept from
+an `[options.<impl>]` table. They only affect that writer's rows, and nothing
+here sweeps by default:
+
+```toml
+[options.ngio]
+mode = ["dask", "numpy", "coarsen"]              # machinery, not filter
+
+[options.ngff-zarr]
+use_tensorstore = [false, true]                  # a different write backend
+
+[options.iohub]
+implementation = ["zarr-python", "zarrs-python", "tensorstore"]
+
+[options.bioio]
+writer = ["full_volume", "timepoints"]
+
+[options.acquire-zarr]
+max_threads = [1, 8]
+```
+
+`[options.iohub] implementation` earns its place immediately, and is what the
+`pipeline` axis above generalised. iohub's registry default is `zarrs-python` —
+the Rust codec pipeline — while every other column encodes through zarr-python's.
+On the smoke image that is 212 ms against 114 ms: roughly half of iohub's
+headline advantage was a measurement of `zarrs`, inside a column labelled with
+iohub's name. Having found that in one column, the axis asks it of the rest.
+
+iohub keeps the option and declines the axis, alone among the zarr-python
+writers: it is the same question in two vocabularies, and
+`implementation=zarr-python pipeline=zarrs` is a row that reads as neither.
+
+`method_native` is the escape hatch for filters with no canonical name (iohub's
+`median`/`min`/`max`/`mode`, ngff-zarr's remaining `Methods`). It is mutually
+exclusive with `method`; the row is labelled with whichever was used.
+
 ### The audit columns
 
-`levels`, `level_shapes` and `pyramid` are read back **off disk**, not taken
-from what the writer was asked for — asking it would not catch a writer that did
-something else. `pyramid` says `as asked` or spells out the divergence, so the
-one writer that cannot comply is labelled rather than silently different.
+`levels`, `level_shapes`, `pyramid`, `codec`, `chunks` and `shards` are read
+back **off disk** with `json` only, not taken from what the writer was asked for
+— asking it would not catch a writer that did something else, and the auditor
+must not be one of the contestants. `pyramid` says `as asked` or spells out the
+divergence, so the one writer that cannot comply is labelled rather than
+silently different.
 
-This has already earned its place twice: it caught `acquire-zarr` reading
-`max_levels` as the count of levels *below* level 0, and it is how the
-xy-versus-xyz split above was found at all — before pinning, it showed only as
+This has already earned its place three times. It caught `acquire-zarr` reading
+`max_levels` as the count of levels *below* level 0. It is how the
+xy-versus-xyz split above was found — before pinning, it showed only as
 `ngff-zarr` producing a 3.9 MB store where ngio produced 7.2 MB, which is easy
-to misread as a codec difference. Pinned, both write ~7.18 MB and the remaining
-spread (`bioio` 4.2 MB, `iohub` 5.7 MB) is genuinely chunking and codecs.
+to misread as a codec difference. And `codec` is how the remaining spread turned
+out to be exactly that: see below.
 
 When the arrays on disk and the NGFF metadata disagree, both numbers are
 reported: a store with five arrays declaring three is a different fault from
 writing three.
 
-Filter choice is still not pinned — the libraries do not offer a common one —
-so `downsample` records what each actually used. Read it alongside the timing.
+## What these numbers do and do not measure
+
+Every benchmark makes choices that a reader has to know about to use it. These
+are the ones this suite makes.
+
+**The centre is a median, and the width is beside it.** `seconds` is the median
+of `repeats` timed runs; `seconds_mad`, `seconds_min` and `seconds_max` are the
+rest of the distribution, and `repeats` says how many runs it came from. The
+`spread` column prints `± <MAD>`, with a relative percentage once it passes 5%.
+At one repeat it prints **`n=1`**, not `± 0.0`: a single sample of a pyramid
+build on a laptop is not a precise number, and typesetting it as one is how a
+comparison table lies. Median and MAD rather than mean and standard deviation
+because at `repeats = 3` one interrupted run moves a mean by more than most of
+the differences being looked for.
+
+**Setup is outside the timing, and so is the previous run's store.** Every
+`Measured` may carry a `setup` that runs before each execution and is excluded
+from it. The create adapters use it to empty the target. Without that, run 1
+writes into an empty directory and runs 2..n each begin by disposing of the
+previous store — `zarr.open_group(mode="w")`, `overwrite=True`, an `rmtree` of a
+few thousand files, depending on the library. That cost sat inside the timed
+region for every run but the first, so the number both included a deletion
+nobody asked about and depended on `repeats`.
+
+A `gc.collect()` joins it there. Collection stays *enabled* during the run:
+disabling it would flatter exactly the implementations that allocate most.
+
+**Wall-clock, with CPU time beside it.** `seconds` is elapsed time, which is
+what a caller waits for. But several of these writers use a dask scheduler or a
+threaded codec pipeline, so elapsed time is partly a measurement of how many
+cores the machine has. `cpu_seconds` is the CPU time over the same runs, and the
+table shows a `cpu/wall` column whenever some row diverges from 1.0 by more than
+20%. ngio's dask mode runs at about 2.0; iohub's zarr-python path at 0.88,
+because it is waiting on I/O.
+
+**Timing ends before the bytes are durable.** The measured call returns when the
+library returns, with data still in the OS write-back cache. `sync_seconds`
+times a flush after the timed runs and records it separately, rather than
+folding it into `seconds` where it would distort the headline. How much work is
+outstanding differs per writer, because their stores differ in size — so read
+`seconds` as "what the call costs", not as write throughput.
+
+**Reads are warm.** `compare-io`'s fixture is written once and read repeatedly,
+and a read op gets one extra untimed call to compute its checksum. Nothing here
+drops the page cache; there is no portable way to. So the read numbers measure
+decode and copy, not disk.
+
+**The codec has to be pinned, or the store size is not a result.** `compressors`
+on an image spec defaults to `"auto"`, which is not one setting but six —
+bioio's `blosc/zstd/3`, iohub's `blosc/zstd/1`, zarr-python's own default, and
+acquire-zarr writing uncompressed. On identical pixels that produced stores
+between 4.2 and 10.0 MB, a spread the README used to attribute vaguely to
+"chunking and codecs". Pinned to `zstd`, the four writers that take a codec
+object land within 0.15% of each other:
+
+| | `auto` | `compressors = "zstd"` |
+| --- | --- | --- |
+| ngio | 7.18 MB | 7.18 MB |
+| ngff-zarr | 7.18 MB | 7.18 MB |
+| ome-zarr-py | 7.18 MB | 7.18 MB |
+| bioio | **4.19 MB** | 7.18 MB |
+
+iohub and acquire-zarr are blosc-only by API, so they land near but not on it;
+the `codec` column is read off the store and says which is which.
+
+**Machine state is recorded, not controlled.** There is no CPU pinning, no
+turbo or frequency control, and no check that the machine is idle. `loadavg` is
+recorded per case so an anomalous row can be attributed rather than puzzled
+over. Results are gitignored for this reason — the recipe is the committable
+artefact.
+
+**What is still not pinned.** Thread counts, except acquire-zarr's `max_threads`
+— the other libraries either expose none or expose them only through a dask
+scheduler. `ngff-zarr.config.memory_target` *is* pinned, because left alone it
+defaults to half of psutil-reported free RAM and silently chooses between a
+single-pass and a slab-by-slab write path, which would make the same config
+measure different code on different machines.
 
 ## Why every implementation gets its own environment
 
@@ -381,18 +614,48 @@ has no number stay distinguishable:
 | `unsupported` | the adapter declares it cannot express this case |
 | `unavailable` | the environment failed to install, or the import failed |
 | `failed` | it ran and raised; the CSV `note` has the exception |
-| `—` | not selected by this config |
 
-`SUPPORTS` and `FORMATS` on each adapter are declarations, not documentation:
-`--list` prints every excluded case with its reason before anything installs.
+`SUPPORTS`, `FORMATS` and `METHODS` on each adapter are declarations, not
+documentation: `--list` prints every excluded case with its reason before
+anything installs.
 
 ## Output
+
+The comparison table is **long, not wide** — one row per implementation and
+variant, columns are measurements:
+
+```
+create_pyramid   image=small   repeats=3
+  impl          variant                                     median      spread   peak RAM   peak RSS      store  cpu/wall  lvl    pyramid     codec          vs first
+  ngio          method=default mode=dask                  144.2 ms    ± 0.1 ms     5.0 MB   230.1 MB    6.8 MiB     2.02x  3      as asked    zstd              1.00x
+  ngio          method=default mode=numpy                  75.8 ms    ± 0.3 ms    12.2 MB   234.4 MB    6.8 MiB     2.48x  3      as asked    zstd              0.53x
+  bioio         method=default writer=full_volume         107.0 ms    ± 0.5 ms    10.7 MB   235.4 MB    4.0 MiB     1.10x  3      as asked    blosc/zstd/3      0.74x
+  bioio         method=default writer=timepoints                                                   unsupported  bioio's write_timepoints needs a t axis
+  iohub         method=default implementation=zarr-python 212.0 ms    ± 0.2 ms     2.5 MB   141.8 MB    5.5 MiB     0.88x  3      as asked    blosc/zstd/1      1.47x
+  iohub         method=default implementation=zarrs-python 111.0 ms   ± 0.8 ms     0.5 MB   145.1 MB    5.5 MiB     1.36x  3      as asked    blosc/zstd/1      0.77x
+```
+
+It used to be wide — one column per implementation — which reads beautifully
+right up to the point where the implementations stop having the same cases. With
+`method` and `[options.<impl>]` they do not: ngio's `mode=numpy` has no
+counterpart column in ngff-zarr, so a wide table spends most of its width on
+`—`. Grouped by operation and then by image, so everything in one block is
+directly comparable and the trailing ratio means something. That ratio is per
+row against the first row that produced a number; the old table printed a `vs
+<base>` heading over a value that was `last/base`, so with six columns four of
+them got no ratio at all.
+
+`variant` disappears when nothing varies, which is every row of `compare-io`.
+The `cpu/wall` column appears only when some row diverges from 1.0 by more than
+20%. `n/a` in `peak RAM` means `tracemalloc` could not account for that
+implementation, not that it allocated nothing.
 
 One CSV schema per suite, not a union across all three — the suites are separated
 precisely so they are not read together. Within a suite the environment is
 repeated on every row, so a single file answers cross-environment questions with
 no joins, and runs append so several accumulate. A file whose header does not
-match **raises** rather than being appended to.
+match **raises** rather than being appended to — which it will for any results
+file written before the measurement columns were added.
 
 Axis columns hold **labels**, not values: `layout` is the string `sharded`,
 `image` is `medium`, never a repr of a kwargs dict. A CSV cell and a config token
@@ -401,6 +664,52 @@ is a one-liner.
 
 Results are gitignored (`experiments/**/*.csv`) while the toml is not. The recipe
 is the committable artefact; the numbers are machine-dependent.
+
+### The HTML report
+
+Past a couple of dozen rows the table stops being how anyone reads a run.
+`reference-compare-create.csv` is 88 rows across six writers, two images and
+four filters, a third of them `unsupported`, so there is a second reader:
+
+```
+uv run ngio-bench-report-create experiments/reference-compare-create.csv
+```
+
+That writes `experiments/reference-compare-create.html` — one self-contained
+file, no network, no dependencies beyond what the runner already needs. Pass
+`-o` for a different path or `--open` to launch it. It is gitignored for the
+same reason the CSV is.
+
+Three views, one filter row scoping all of them:
+
+* **Timing** — median wall-clock, faceted and grouped, with min/max whiskers
+  where `repeats > 1`. Linear bars or a log dot plot; absolute or a ratio
+  against a baseline you pick.
+* **Coverage** — implementation against filter, showing all four of `ok`,
+  `unsupported`, `unavailable` and `failed`, with the adapter's own reason on
+  hover. This is where the capability gaps read at a glance.
+* **Memory & CPU** — peak RSS split into what importing the library cost and
+  what the case cost on top, plus `cpu/wall` against a single-threaded rule.
+
+**The audit columns are drawn on the charts, not left in a column.** A bar
+whose `pyramid` differs from the one requested is hatched and marked `≠`,
+because a writer that finished first while writing something else has not won
+anything. `acquire-zarr` is the fastest row in the reference file and every one
+of its bars carries that mark.
+
+The report takes the **schema**, not this one file. It works out which of the
+ten `AXIS_FIELDS` a CSV actually varies along and offers them as facet, group
+and series pickers, so a config sweeping `max_threads` or `writer` charts
+without a code change; an axis with one value simply drops a level of nesting.
+It understands `compare-create` only — `compare-io` and `internal` write
+different columns and are refused at the door rather than half-rendered.
+
+Colour names the implementation and nothing else, assigned by name so filtering
+never repaints the survivors. Six hues cannot all stay separable under
+simulated dichromacy inside the lightness bands both themes need, so colour is
+deliberately a supporting channel: every bar is directly labelled, every chart
+has a table view, and a texture toggle carries identity with 45°/135° hatching
+for readers who need it without hue.
 
 ## Adding to it
 
@@ -420,7 +729,8 @@ def run(root: Path, **values) -> Measured:
 
 Everything outside the returned callable is excluded from the measurement. It is
 one function rather than a `(setup, run)` pair because setup and the measured
-call always share state.
+call always share state — a `Measured.setup`, when a block needs one, is for
+work that must be repeated before *every* run rather than done once.
 
 **A new comparison implementation** is one module in the relevant `adapters/`
 directory and one line in that suite's `IMPLS`:
@@ -431,16 +741,45 @@ REQUIRES = ("tensorstore>=0.1.85", "numpy>=2")   # its uv environment
 SUPPORTS = frozenset({"read_full", ...})         # operations it can express
 FORMATS  = frozenset({2, 3})                     # zarr formats it handles
 PYTHON   = None                                  # interpreter pin, if any
+METHODS  = {"mean": ..., "nearest": ...}         # canonical name -> its own
+OPTIONS  = {"mode": ["dask", "numpy"]}           # its own settings, as axes
+PIPELINES = frozenset({"zarr-python"})           # opt out of the pipeline axis
 
-def build(op, spec, root) -> Measured: ...
+def build(op, spec, root, *, method=..., **options) -> Measured: ...
+
+def excludes_pipeline(pipeline, values) -> str:  # one combination it declines
+    ...
 ```
+
+`METHODS` and `OPTIONS` are optional; an adapter declaring neither — every one
+in `compare-io` — is called as `build(op, spec, root)`, since the parent only
+passes keywords an adapter declared. `OPTIONS` follows the same open/closed
+declaration forms as a block's `AXES`, and a create adapter's option names go in
+`AXIS_FIELDS` in `compare/create/__init__.py`.
+
+`PIPELINES` and `excludes_pipeline` are the two ways out of the `pipeline` axis,
+and both are optional — a writer that goes through zarr-python declares neither
+and takes the swap without a line of code, which is the point. `PIPELINES` is
+for an unconditional gap (`acquire-zarr`, which has no zarr-python in its path);
+`excludes_pipeline` is for a combination only the adapter can judge (ngff-zarr's
+tensorstore backend). Both are answered by the parent, so the gap shows up in
+`--list` and no child process is started to discover it. The reason string is
+the cell someone reads, so it should say what is actually true of *that*
+library — see `iohub`, whose reason is not that it cannot.
+
+If a `METHODS` entry or an `OPTIONS` value needs a package the library does not
+itself depend on — `dask-image` for ngff-zarr's nearest, `tensorstore` for its
+other backend — it goes in `REQUIRES`. A declaration is a promise, and `REQUIRES`
+is what keeps it.
 
 The constants are read by the **parent**, which has none of these libraries
 installed — so an adapter must import with nothing but the standard library and
-numpy. Every `import tensorstore` belongs inside `build`, never at module scope.
-The same discipline applies to `ngio_benchmarks/core/`, which is imported inside
-every child environment: a stray `import ngio` there would require every peer's
-environment to also hold ngio.
+numpy. Every `import tensorstore` belongs inside `build`, never at module scope,
+and a `METHODS` table maps to its library's *values* rather than its enum
+members for the same reason. The same discipline applies to
+`ngio_benchmarks/core/`, which is imported inside every child environment: a
+stray `import ngio` there would require every peer's environment to also hold
+ngio.
 
 ## Relationship to `tests/performance/`
 
