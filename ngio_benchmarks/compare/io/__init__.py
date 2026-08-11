@@ -46,7 +46,6 @@ IMPLS = {
     "dask": "ngio_benchmarks.compare.io.adapters.dask_array",
     "tensorstore": "ngio_benchmarks.compare.io.adapters.tensorstore_impl",
     "z5py": "ngio_benchmarks.compare.io.adapters.z5py_impl",
-    "acquire-zarr": "ngio_benchmarks.compare.io.adapters.acquire",
 }
 
 SCHEMA = Schema(

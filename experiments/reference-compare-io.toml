@@ -29,9 +29,8 @@
 #   dask          da.from_array / da.store, .compute() inside the timing
 #   tensorstore   the same bytes decoded outside Python — a ceiling, not a peer
 #   z5py          a C++ zarr/n5 implementation with an h5py-shaped API
-#   acquire-zarr  write-only, streaming; supports `write_full` and nothing else
 #
-# impl = ["ngio", "zarr", "zarrs", "dask", "tensorstore", "z5py", "acquire-zarr"]
+# impl = ["ngio", "zarr", "zarrs", "dask", "tensorstore", "z5py"]
 
 # Which operations to measure. Default: all six.
 #
@@ -121,9 +120,8 @@
 #
 # Two fields matter more here than elsewhere. `zarr_format` decides who can
 # take part at all — `zarrs` is a zarr v3 codec pipeline and has no v2
-# equivalent, and `acquire-zarr` 0.8 dropped v2. And `shards` excludes `z5py`,
-# which does not implement v3 sharding. Those cases are reported `unsupported`
-# rather than left blank.
+# equivalent. And `shards` excludes `z5py`, which does not implement v3
+# sharding. Those cases are reported `unsupported` rather than left blank.
 
 # [images.my_plate]
 # shape       = [1, 64, 2048, 2048]

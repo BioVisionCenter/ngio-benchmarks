@@ -20,7 +20,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ngio_benchmarks.compare.create import _ops
-from ngio_benchmarks.compare.io.adapters.acquire import dimensions
 from ngio_benchmarks.core.measure import Measured, Unsupported
 
 if TYPE_CHECKING:
@@ -64,6 +63,37 @@ OPTIONS = {
 #: halve xy at every level. So `spec.downsample` does not reach this column: the
 #: audit reports `pyramid: differs` and prints the shapes it really wrote.
 _NOTE = "streams frames; pyramid geometry is acquire-zarr's own, not spec.downsample"
+
+
+def dimensions(spec: ImageSpec, settings_module):
+    """Describe `spec`'s axes to acquire-zarr.
+
+    The leading axis is the append dimension and is declared with size 0: that
+    is how the library is told the stream grows there, and it is why this
+    adapter can only express a whole-volume write.
+    """
+    az = settings_module
+    kinds = {
+        "t": az.DimensionType.TIME,
+        "c": az.DimensionType.CHANNEL,
+        "z": az.DimensionType.SPACE,
+        "y": az.DimensionType.SPACE,
+        "x": az.DimensionType.SPACE,
+    }
+    dims = []
+    for position, name in enumerate(spec.axes):
+        chunk = spec.chunks[position]
+        shard = (spec.shards[position] // chunk) if spec.shards else 1
+        dims.append(
+            az.Dimension(
+                name=name,
+                kind=kinds[name],
+                array_size_px=0 if position == 0 else spec.shape[position],
+                chunk_size_px=chunk,
+                shard_size_chunks=shard,
+            )
+        )
+    return dims
 
 
 def build(

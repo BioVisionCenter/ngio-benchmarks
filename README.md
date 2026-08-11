@@ -267,7 +267,6 @@ Array access compared across libraries, over `impl` × `op` × `image`.
 | `dask` | `da.from_array` / `da.store`, with `.compute()` inside the timing |
 | `tensorstore` | the same bytes decoded outside Python — a ceiling, not a peer |
 | `z5py` | a C++ zarr/n5 implementation with an h5py-shaped API |
-| `acquire-zarr` | **write-only, streaming**; `write_full` and nothing else |
 
 The aligned/straddling pair is the read-amplification question asked of
 everyone: a region inside chunk boundaries touches the minimum number of chunks,
