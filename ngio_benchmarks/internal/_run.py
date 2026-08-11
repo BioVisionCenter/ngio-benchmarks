@@ -27,6 +27,7 @@ from ngio_benchmarks.core.output import (
     MEASUREMENT_FIELDS,
     Schema,
     interpreter,
+    log,
     version,
 )
 from ngio_benchmarks.internal import BLOCKS
@@ -135,9 +136,10 @@ def run_blocks(
     """Measure every case of every module; return the results and skip count."""
     results: list[Result] = []
     skipped = 0
-    for name, module in modules.items():
+    total = len(modules)
+    for index, (name, module) in enumerate(modules.items(), start=1):
         if not quiet:
-            print(f"running {name} ...", flush=True)
+            log(f"[{index}/{total}] running {name} ...")
         repeat = repeats or getattr(module, "REPEATS", DEFAULT_REPEATS)
         for case in cases(name, resolved[name]):
             try:

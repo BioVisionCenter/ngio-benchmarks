@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ngio_benchmarks.core.cli import PROJECT_ROOT
-from ngio_benchmarks.core.output import read_csv
+from ngio_benchmarks.core.output import log, read_csv
 
 if TYPE_CHECKING:
     from ngio_benchmarks.core.config import EnvSpec
@@ -95,6 +95,8 @@ def run_child(
     *,
     python: str | None = None,
     quiet: bool = False,
+    index: int | None = None,
+    total: int | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     """Install one environment, run one job in it, and read back its rows.
 
@@ -115,6 +117,7 @@ def run_child(
     every environment would also get this package's own dependencies.
     """
     interpreter = python or f"{sys.version_info.major}.{sys.version_info.minor}"
+    prefix = f"[{index}/{total}] " if index is not None and total is not None else ""
     with tempfile.TemporaryDirectory(prefix="ngio-bench-job-") as tmp:
         out = Path(tmp) / "out.csv"
         path = job._replace(out=str(out)).write(Path(tmp) / "job.json")
@@ -124,7 +127,7 @@ def run_child(
             "python", "-m", "ngio_benchmarks._child", str(path),
         ]  # fmt: skip
         if not quiet:
-            print(f"=> {label}", flush=True)
+            log(f"{prefix}=> {label}")
         completed = subprocess.run(
             command, check=False, cwd=PROJECT_ROOT, capture_output=quiet
         )
@@ -134,7 +137,7 @@ def run_child(
                 detail += (
                     f": {completed.stderr.decode(errors='replace').strip()[-400:]}"
                 )
-            print(f"   {label}: FAILED ({detail})")
+            log(f"{prefix}   {label}: FAILED ({detail})")
             return [], detail
         return read_csv(out), ""
 

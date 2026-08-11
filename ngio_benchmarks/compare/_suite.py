@@ -32,6 +32,7 @@ from ngio_benchmarks.core.output import (
     Schema,
     as_row,
     check_csv,
+    log,
     report_matrix,
     write_csv,
 )
@@ -461,9 +462,11 @@ def main(suite: Suite, argv: list[str] | None = None) -> int:
                 for s in specs
                 if any(s.name == c["image"] for cs in runnable.values() for c in cs)
             ]
-            print("preparing fixtures ...", flush=True)
+            log("preparing fixtures ...")
             suite.prepare(root, used, live)
 
+        total_cases = sum(len(planned) for planned in runnable.values())
+        index = 0
         for name, planned in runnable.items():
             if not planned:
                 continue
@@ -473,6 +476,7 @@ def main(suite: Suite, argv: list[str] | None = None) -> int:
                 adapter, "PYTHON", None
             )
             for case in planned:
+                index += 1
                 # One child per case. `run_child` reuses uv's environment cache,
                 # so this pays an interpreter start rather than an install --
                 # and it is what makes the memory columns per case rather than
@@ -505,6 +509,8 @@ def main(suite: Suite, argv: list[str] | None = None) -> int:
                     with_args + _pipeline_args(case, config),
                     python=python,
                     quiet=settings.quiet,
+                    index=index,
+                    total=total_cases,
                 )
                 if error:
                     by_impl[name].append(_failure_row(suite, name, error))
@@ -514,7 +520,7 @@ def main(suite: Suite, argv: list[str] | None = None) -> int:
     rows = [row for name in impls for row in by_impl[name]]
     if settings.csv:
         write_csv(settings.csv, suite.schema, rows)
-        print(f"wrote {settings.csv}")
+        log(f"wrote {settings.csv}")
     report_matrix(rows, suite.schema)
     return 0
 

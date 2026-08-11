@@ -252,7 +252,7 @@ implementation = ["zarr-python", "zarrs-python", "tensorstore"]
 
 
 [images.timelapse_image]
-shape       = [5, 3, 64, 2048, 2048]
+shape       = [4, 2, 32, 2048, 2048]
 chunks      = [1, 1,  1,  256,  256]
 levels      = 5
 downsample  = ["y", "x"]            # or ["z", "y", "x"] for isotropic

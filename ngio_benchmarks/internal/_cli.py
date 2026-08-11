@@ -20,6 +20,7 @@ from ngio_benchmarks.core.job import Job
 from ngio_benchmarks.core.output import (
     as_row,
     check_csv,
+    log,
     report,
     report_matrix,
     write_csv,
@@ -99,12 +100,12 @@ def _run_here(settings, modules, resolved, missing) -> int:
         if settings.csv:
             env = environment("current")
             write_csv(settings.csv, SCHEMA, [as_row(r, SCHEMA, env) for r in results])
-            print(f"wrote {settings.csv}")
+            log(f"wrote {settings.csv}")
         if not settings.quiet:
             report(results)
             if skipped:
                 # Never let a bounded sweep read as a complete one.
-                print(f"({skipped} cases skipped: not measured at that size)\n")
+                log(f"({skipped} cases skipped: not measured at that size)\n")
     return 0
 
 
@@ -117,10 +118,11 @@ def _run_environments(settings, blocks: list[str], config: Path) -> int:
     """
     envs_core.require_uv()
     if settings.keep:
-        print("note: `keep` does not apply across environments; ignoring it")
+        log("note: `keep` does not apply across environments; ignoring it")
 
     rows: list[dict[str, str]] = []
-    for env in settings.environments:
+    total = len(settings.environments)
+    for index, env in enumerate(settings.environments, start=1):
         with cli_core.data_root(keep=False) as root:
             job = Job(
                 suite="internal",
@@ -140,6 +142,8 @@ def _run_environments(settings, blocks: list[str], config: Path) -> int:
                 envs_core.uv_args(env, config.parent),
                 python=env.python,
                 quiet=True,
+                index=index,
+                total=total,
             )
             if error:
                 rows.append(_failure_row(env.name, error))
@@ -149,7 +153,7 @@ def _run_environments(settings, blocks: list[str], config: Path) -> int:
 
     if settings.csv:
         write_csv(settings.csv, SCHEMA, rows)
-        print(f"wrote {settings.csv}")
+        log(f"wrote {settings.csv}")
     report_matrix(rows, SCHEMA)
     return 0
 

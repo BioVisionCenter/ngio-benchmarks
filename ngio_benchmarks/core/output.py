@@ -13,6 +13,7 @@ from __future__ import annotations
 import csv
 import platform
 import sys
+import time
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from ngio_benchmarks.core.measure import OK
@@ -67,6 +68,15 @@ class Schema(NamedTuple):
     #: prints one per block; the comparison suites print one per operation,
     #: which is what makes a row a like-for-like comparison across columns.
     group: str = "block"
+
+
+def log(message: str) -> None:
+    """Print a progress line stamped with the wall-clock time, flushed immediately.
+
+    The one place the timestamp format lives -- every progress call site
+    routes through this instead of formatting its own prefix.
+    """
+    print(f"[{time.strftime('%H:%M:%S')}] {message}", flush=True)
 
 
 def interpreter() -> dict[str, str]:
