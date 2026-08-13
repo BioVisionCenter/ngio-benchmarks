@@ -9,6 +9,16 @@ recovers any of the amplification.
 `.compute()` is inside the timed callable on purpose. A dask column that
 measured only graph construction would be the fastest in the table and would
 mean nothing.
+
+The write goes through `da.to_zarr`, not `da.store(..., lock=False)`. That is
+not a style choice -- `reports/ngio-upstream-write-path.md` measured the
+latter racing and losing updates on a sharded target, because a patch chunked
+to `spec.chunks` covers only a fraction of the shard zarr has to
+read-modify-write. Since dask 2025.11, `to_zarr` onto an existing array asks
+the target for its write unit, rechunks the patch to a multiple of it, and
+only then stores -- correctly, with no lock, on a full write or a straddling
+region alike. That makes this row a floor worth reading ngio against: what
+writing this correctly costs with no ngio layer on top.
 """
 
 from __future__ import annotations
@@ -26,7 +36,9 @@ if TYPE_CHECKING:
 
 NAME = "dask"
 DISTRIBUTION = "dask"
-REQUIRES = ("dask[array]>=2024.1", "zarr>=3.1.6", "numpy>=2")
+#: The 2025.11 floor is load-bearing: `to_zarr`'s write-unit rechunk onto an
+#: existing array is what lets the write below skip a lock and stay correct.
+REQUIRES = ("dask[array]>=2025.11", "zarr>=3.1.6", "numpy>=2")
 SUPPORTS = frozenset(_ops.READS + _ops.WRITES)
 FORMATS = frozenset({2, 3})
 PYTHON = None
@@ -49,12 +61,9 @@ def build(op: str, spec: ImageSpec, root: Path) -> Measured:
     patch = da.from_array(data, chunks=spec.chunks)
 
     def write() -> None:
-        # `regions` rather than `to_zarr`: a region write is the operation
-        # being measured, and `to_zarr` would only ever express the full case.
-        #
-        # A bare tuple, not a list of one: `da.store` wraps a tuple into a
-        # single-element list itself, so wrapping it here would hand the target
-        # a tuple nested one level too deep.
-        da.store(patch, destination, regions=index, lock=False)
+        # `region=index` covers `write_full` the same as a partial write:
+        # `region` selecting every element rechunks and stores exactly like a
+        # plain `to_zarr` would, so there is no separate full-write branch.
+        da.to_zarr(patch, destination, region=index)
 
     return Measured(write, extra={"target": str(path)})

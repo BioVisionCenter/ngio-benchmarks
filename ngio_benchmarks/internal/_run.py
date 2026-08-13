@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 #: narrower header than its parent and a merge that `KeyError`s. Six names
 #: against four blocks is cheap to maintain, a stale entry costs one empty
 #: column, and `--list` makes a mismatch obvious.
-AXIS_FIELDS = ("alignment", "kernel", "layout", "mode", "n", "size", "z")
+AXIS_FIELDS = ("alignment", "c", "kernel", "layout", "mode", "n", "size", "t", "z")
 
 SCHEMA = Schema(
     fields=(

@@ -246,6 +246,16 @@ reason — check those columns before concluding anything about an ngio change.
 read back by the working tree is a different experiment from the one that was
 asked for, so every environment gets its own temp root.
 
+`[[environments]]` is this suite's alone — `compare-io` and `compare-create`
+reject it rather than silently ignoring it, because a matrix of ngio builds
+is not what either suite reports: they compare `impl`s, and ngio is one row
+among several. Comparing ngio versions there is `[env.ngio] requires = [...]`
+(below) run once per build, with both runs appending to the same `csv` and the
+recorded `ngio_version` column telling the rows apart —
+`experiments/write-lock-v1-vs-worktree.toml` is a worked example, built to
+catch exactly the kind of write-path regression `internal`'s read-mostly
+blocks cannot see.
+
 ## Suite 2 — `compare-io`
 
 Array access compared across libraries, over `impl` × `op` × `image`.
@@ -264,7 +274,7 @@ Array access compared across libraries, over `impl` × `op` × `image`.
 | `ngio` | `open_image` / `get_as_numpy` / `set_array`, via public slicing keywords; `mode = "dask"` swaps in `get_as_dask` and a dask patch |
 | `zarr` | zarr-python directly — the floor every other row is read against |
 | `zarrs` | the same code under the zarrs (Rust) codec pipeline; **zarr v3 only** |
-| `dask` | `da.from_array` / `da.store`, with `.compute()` inside the timing |
+| `dask` | `da.from_array` / `da.to_zarr`, region-aware, with `.compute()` inside the timing |
 | `tensorstore` | the same bytes decoded outside Python — a ceiling, not a peer |
 | `z5py` | a C++ zarr/n5 implementation with an h5py-shaped API |
 
@@ -273,25 +283,44 @@ everyone: a region inside chunk boundaries touches the minimum number of chunks,
 and the same region offset by half a chunk fetches and discards every chunk on
 each edge. The ratio between the two columns is what that costs.
 
-`ngio`'s `mode` and the `dask` row invite a direct comparison, and one half of it
-is not like-for-like. Both **reads** build a graph over the same chunk grid, so
-those are comparable. The **writes** are not: ngio stores behind a process-global
-lock, so its flushes are serialised, while the `dask` row passes `lock=False` and
-lets them race — visible as `cpu/wall` near 1 on one and well above it on the
-other.
-
-Whether that lock is buying anything depends on the cell. zarr read-modify-writes
-a whole **write unit** — the chunk, or the shard when the array is sharded —
-whenever a block does not cover one, and two blocks racing on the same unit lose
-an update. On an unsharded `write_full` a block is exactly one chunk, zarr reads
-nothing, and the lock costs ~3× for nothing. On `sharded`, and on either
-straddling write, it is the only reason the output is correct: the unlocked
-`dask` row on `sharded` `write_full` really does write corrupt data — 87% of the
-array wrong, at 4.6× ngio's speed, in a store one fifth the size. Measured in
+`ngio`'s `mode` and the `dask` row invite a direct comparison on writes as well
+as reads, which was not always a fair one to make. `dask`'s write used to go
+through `da.store(..., lock=False)`, with the patch chunked to the target's
+on-disk chunk shape rather than its **write unit** — the chunk, or the shard
+when the array is sharded. zarr read-modify-writes a whole write unit whenever
+a block does not cover one, so on `sharded` every block was a fraction of the
+unit, and unlocked let two blocks racing on the same one lose each other's
+updates: measured in
 [`reports/dask-sharded-write-races.md`](reports/dask-sharded-write-races.md),
-with the ngio-facing half — where rechunking the patch to the shard shape turns
-10.7 s into 0.58 s — split out for filing upstream in
+87% of a `sharded` `write_full` came out wrong, at 4.6× ngio's speed, in a
+store one fifth the size.
+
+That made `dask` the wrong floor to read ngio against, and
+[`reports/ngio-upstream-write-path.md`](reports/ngio-upstream-write-path.md)
+is why: since dask 2025.11, `da.to_zarr` onto an existing array asks the
+target for its write unit, rechunks the patch to a multiple of it, and only
+then stores — region-aware, correctly, with no lock, because the blocks it
+hands to zarr are never smaller than what zarr has to read-modify-write.
+`dask`'s write goes through `to_zarr` now, so the row measures the honest cost
+of writing this correctly with no ngio layer on top, on any layout. The gap to
+`ngio`'s row is then ngio's own abstraction cost — plus, on whichever ngio
+build still locks every `da.store` call regardless of whether the block it is
+about to write needs it, the cost of buying that same correctness the slow
+way. The ngio-facing half of that finding — where rechunking the patch to the
+shard shape turns 10.7 s into 0.58 s — is split out for filing upstream in
 [`reports/ngio-dask-sharded-writes.md`](reports/ngio-dask-sharded-writes.md).
+
+What to write *instead* is a third report,
+[`reports/lazy-array-write-alternatives.md`](reports/lazy-array-write-alternatives.md):
+ten strategies for getting a lazy array into a store, each with a runnable
+snippet and its measured cost, over the three shapes ngio's callers actually
+have — materialize, fan-in reduce, resample with a halo. Two results there bear
+on this table. Rechunking to the write unit is *not* sufficient once the lock
+comes off: on a straddling region it corrupts too, and the fix is to split the
+region into its unit-aligned interior and the leftover faces. And
+`_pyramid.py:47` rechunks to `target.chunks` rather than `target.shards or
+target.chunks`, so `consolidate()` on a sharded pyramid carries the same 84×
+amplification at every level.
 
 That row is why `checksum` covers writes as well as reads. A read is hashed from
 what it returned; a write is read back off disk afterwards by the `audit` hook,
@@ -637,6 +666,17 @@ requires = ["local:../../ngio"]     # measure the working tree
 Requires `uv` on PATH. The first run pays a real install for every environment;
 later runs hit uv's cache. An environment that fails to install is reported and
 skipped rather than aborting the rest.
+
+**Why not pixi.** The sibling `zarr-performance-exploration` sandbox uses it,
+for a different shape of problem: a small, fixed set of named environments
+declared once in a manifest. This project's environments are the opposite —
+arbitrary, unbounded, and declared per committed experiment file, which is
+what `[[environments]]` and `[env.<impl>]` above both are. `uv run --with` /
+`--with-editable` installs whatever a config names with no manifest to edit;
+pixi's environments are pre-declared in `pixi.toml` and solved by `pixi
+install`, so a new comparison would mean editing that manifest and re-solving
+before the config file could run at all — the opposite of "the config file is
+the only interface".
 
 ### A blank cell is a claim
 

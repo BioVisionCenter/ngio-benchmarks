@@ -21,24 +21,30 @@ mean nothing. The write needs no `.compute()`: `set_array` dispatches on the
 patch's type and its dask branch ends in an eager `da.store`.
 
 One thing to know before reading `mode=dask` against the `dask` column beside
-it: **they do not write under the same rules.** ngio stores through
-`da.store(..., lock=DASK_STORE_LOCK)`, a process-global lock shared by every
-dask write in the library, so its flushes are serialised; the `dask` column
-passes `lock=False` and lets them race.
+it: **they do not always take the same path to correctness.** Released ngio
+(1.0.0) stores through `da.store(..., lock=DASK_STORE_LOCK)`, a process-global
+lock shared by every dask write in the library, so its flushes are serialised
+regardless of whether the block about to flush actually needs it. The `dask`
+column stores through `da.to_zarr`, which asks the target for its write
+unit -- the chunk, or the *shard* when the array is sharded -- and rechunks
+the patch to a multiple of it before storing, so none of its blocks can
+straddle a unit two writers might touch at once and no lock is needed.
 
-What that buys is not the same in every cell, and the tempting one-line
-justification for it is wrong. zarr read-modify-writes a whole **write unit** --
-the chunk, or the *shard* when the array is sharded -- whenever a block does not
-cover one, and two blocks racing on the same unit lose an update. On a
-`write_full` into an unsharded spec each dask block *is* exactly one chunk, so
-zarr takes its complete-chunk path and issues no store read at all: nothing to
-race, and the lock costs ~3x for it. On `sharded` the unit is a 256-chunk shard
-that no single block can fill, so even `write_full` is 4096 read-modify-writes
-over 16 keys -- and the unlocked `dask` column there really does write corrupt
-data, ~87% of the array wrong. The straddling ops are that second case on any
-layout. So the lock is dead weight in one cell and the only thing keeping the
-next one correct; `reports/dask-sharded-write-races.md` measures both, and the
-`checksum` column now covers writes so neither has to be taken on trust.
+What ngio's lock buys is not the same in every cell. zarr read-modify-writes a
+whole write unit whenever a block does not cover one, and two blocks racing on
+the same unit lose an update. On a `write_full` into an unsharded spec each
+dask block *is* exactly one chunk, so zarr takes its complete-chunk path and
+issues no store read at all: nothing to race, and the lock costs ~3x for
+nothing. On `sharded` the unit is a 256-chunk shard that no single block can
+fill, so even `write_full` is 4096 read-modify-writes over 16 keys -- and an
+unlocked `da.store(..., lock=False)` really does write corrupt data there,
+~87% of the array wrong, as measured in
+`reports/dask-sharded-write-races.md`. The straddling ops are that second case
+on any layout. So on `sharded` and on either straddling write, the gap to the
+`dask` column is close to the cost of buying that same correctness the slow
+way rather than by rechunking first; on an unsharded `write_full` it is close
+to pure overhead. `checksum` covers writes as well as reads so neither claim
+has to be taken on trust.
 
 The reads carry no such asymmetry: both build a graph over the same chunk grid,
 because `da.from_zarr` takes its chunks from `Array.chunks`, which is the *inner*

@@ -66,12 +66,18 @@ def audit(path: Path, spec: ImageSpec, op: str) -> dict[str, str]:
     """Read a write back off disk and hash what it actually left there.
 
     This exists because of a row that looked fine. `dask` writing the `sharded`
-    image posts a good time for output that is **wrong**: its blocks are single
-    chunks while the target's write unit is a 256-chunk shard, so every block
-    makes zarr read-modify-write the whole shard, and `lock=False` lets those
-    races lose each other's updates. Nothing in the suite was looking -- the
-    checksum was computed for reads only -- so the fast number stood unchallenged.
-    Measured in `reports/dask-sharded-write-races.md`.
+    image used to post a good time for output that was **wrong**: with its
+    write chunked to `spec.chunks` and stored via `da.store(..., lock=False)`,
+    its blocks were single chunks while the target's write unit was a
+    256-chunk shard, so every block made zarr read-modify-write the whole
+    shard, and the lack of a lock let those races lose each other's updates.
+    Nothing in the suite was looking -- the checksum was computed for reads
+    only -- so the fast number stood unchallenged. Measured in
+    `reports/dask-sharded-write-races.md`. `dask`'s write now goes through
+    `da.to_zarr`, which rechunks to the write unit and needs no lock, but the
+    audit stays: it is what would have caught this the first time, and a
+    write path silently starting to corrupt again is exactly the kind of
+    regression a benchmark table would not otherwise notice.
 
     Filed under the same `checksum` column as a read, deliberately, because it is
     the same claim: *the digest of the pixels this row was responsible for*. That

@@ -389,6 +389,13 @@ def main(suite: Suite, argv: list[str] | None = None) -> int:
     config: Path = args.config
     data = config_core.read(config, _keys(suite))
     settings = config_core.common(data, config, ())
+    if settings.environments:
+        raise SystemExit(
+            f"{config}: `[[environments]]` has no effect in {suite.name} -- "
+            "this suite pins one ngio per run via `[env.ngio] requires = "
+            '[...]`, not a matrix. Run the config once per build and let the '
+            "rows land in the same `csv`."
+        )
 
     registry = images_mod.registry(settings.images)
     impls = config_core.names(data, "impl", suite.impls, config) or list(suite.impls)
