@@ -19,4 +19,5 @@ BLOCKS = {
     "layout": "ngio_benchmarks.internal.blocks.layout",
     "roi": "ngio_benchmarks.internal.blocks.roi",
     "algorithms": "ngio_benchmarks.internal.blocks.algorithms",
+    "iterators": "ngio_benchmarks.internal.blocks.iterators",
 }

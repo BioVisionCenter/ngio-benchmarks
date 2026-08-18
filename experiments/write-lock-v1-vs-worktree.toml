@@ -1,0 +1,49 @@
+# The write-lock refactor, where it actually shows up: sharded and chunked
+# dask writes, ngio against the peer it borrows its store call from.
+#
+# reports/ngio-upstream-write-path.md measured v1.0.0's process-global
+# `DASK_STORE_LOCK` at 16x slower than necessary on a sharded write, with
+# read amplification the lock does not touch. The branch at ../../ngio
+# (relative to this file) replaces it. `roi`/`layout`/`consolidate` in the
+# internal suite (experiments/v1-vs-worktree.toml) barely touch this path --
+# they're read-only or seed with a numpy patch -- so this config targets the
+# ops and image that do: a dask-typed patch written into a store whose shard
+# does not equal one dask block.
+#
+# `impl = ["ngio", "dask"]` puts ngio's write beside `dask`'s -- which goes
+# through `da.to_zarr` (rechunked to the target's write unit, no lock needed)
+# rather than the naive `da.store(..., lock=False)` that used to corrupt a
+# sharded write. So `dask` here is the floor, not a race partner: on v1.0.0,
+# where ngio still locks every `da.store` call, the gap to `dask` is close to
+# the cost of buying the same correctness the slow way; on the worktree build,
+# a `dask`-sized gap is the sign the fix landed. Watch `checksum` too, not
+# just the timing -- it should agree with `dask`'s on every row here.
+#
+# `[options.ngio] mode = ["dask"]` is load-bearing, not decoration: ngio's
+# default is `mode = "numpy"`, which never calls `da.store` at all and would
+# make both ngio rows measure the same untouched path regardless of which
+# build is installed.
+#
+# `[[environments]]` has no effect in compare-io -- comparing ngio builds here
+# means running this file once per build and letting both rows land in the
+# same `csv`, distinguished by the `ngio_version` column the schema already
+# records. Flip which line is active below and rerun:
+#
+#   uv run ngio-bench-compare-io experiments/write-lock-v1-vs-worktree.toml --list
+#   uv run ngio-bench-compare-io experiments/write-lock-v1-vs-worktree.toml
+#
+# `local:../../ngio` installs editable, so the `worktree` run measures
+# whatever is on disk in that checkout right now -- including uncommitted
+# changes.
+
+impl  = ["ngio", "dask"]
+op    = ["write_full", "write_roi_aligned", "write_roi_straddling"]
+image = ["sharded", "chunks64", "chunks512"]
+csv   = "write-lock-v1-vs-worktree.csv"
+
+[options.ngio]
+mode = ["dask"]
+
+[env.ngio]
+# requires = ["ngio==1.0.0"]      # run 1 -- comment this line out and uncomment
+requires = ["local:../../ngio"]   # run 2, then rerun -- both land in one csv

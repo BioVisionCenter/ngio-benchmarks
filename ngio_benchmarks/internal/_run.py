@@ -41,10 +41,24 @@ if TYPE_CHECKING:
 #:
 #: Deliberately *not* computed by importing the blocks: inside an older
 #: environment a block is allowed to fail to import, which would give a child a
-#: narrower header than its parent and a merge that `KeyError`s. Six names
-#: against four blocks is cheap to maintain, a stale entry costs one empty
+#: narrower header than its parent and a merge that `KeyError`s. Thirteen names
+#: against five blocks is cheap to maintain, a stale entry costs one empty
 #: column, and `--list` makes a mismatch obvious.
-AXIS_FIELDS = ("alignment", "c", "kernel", "layout", "mode", "n", "size", "t", "z")
+AXIS_FIELDS = (
+    "alignment",
+    "c",
+    "iterator",
+    "kernel",
+    "layout",
+    "mapper",
+    "mode",
+    "n",
+    "size",
+    "t",
+    "work",
+    "workers",
+    "z",
+)
 
 SCHEMA = Schema(
     fields=(

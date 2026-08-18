@@ -126,7 +126,7 @@ The generator is tuned to ~1.8x, matching the ~1.7x of a real sample image.
 
 ## Suite 1 — `internal`
 
-The four blocks, and the decision each one informs:
+The five blocks, and the decision each one informs:
 
 | block | axes | question |
 | --- | --- | --- |
@@ -134,11 +134,65 @@ The four blocks, and the decision each one informs:
 | `layout` | `layout` × `z` | same bytes, different chunk/shard shape |
 | `roi` | `alignment` × `size` | chunk-aligned vs straddling reads |
 | `algorithms` | `kernel` × `n` | scaling curves for ngio's own algorithms |
+| `iterators` | `iterator` × `work` × `mapper` × `workers` | does fanning a map out actually pay? |
 
 `algorithms` reports a series so the *shape* is visible — one timing cannot tell
 O(n) from O(n²), four can. Its three kernels have different useful `n` ranges, so
 cases outside a kernel's range are skipped and the run reports how many it
 dropped; a bounded sweep must never read as a complete one.
+
+`iterators` exists because the other half of ngio's performance work structurally
+cannot answer this one. `tests/performance/` gates the iterators on **op counts**,
+and it pins the parallel scenario's tally *equal* to the serial one — store
+operations are invariant to concurrency by design there. Wall clock and peak
+memory are the only instruments that can price a mapper, and both are here.
+
+Its two arms are chosen so the pair tells the whole story. `features` reduces
+read-only, so its curve is what the pool is worth on its own. `segmentation`
+writes, and every writing map ends in a rebuild of the *whole* pyramid that no
+pool touches — so its curve is the same speedup with a fixed serial tail bolted
+on, and the gap between the two is Amdahl measured rather than asserted.
+`consolidate` prices that tail on its own, which is what lets the two compose.
+
+The `work` axis is there because a thread pool can only overlap what lets go of
+the GIL, so a sweep with a trivial `func` measures the machinery's ceiling and
+nothing a caller would meet. Its two values bracket the question with real
+analysis code: `otsu` is a numpy histogram scan, which in isolation holds the GIL
+outright (0.80 → 0.95 ms per patch across eight threads); `label` is
+`scipy.ndimage.label`, whose C kernel releases it (1.30 → 0.22 ms, 5.9x). A third
+value, `stub`, is the old near-free threshold, kept for isolating the machinery
+and left out of the default because it flatters every mapper equally.
+
+The measured result is not the obvious prediction from those two numbers, which is
+why it is an axis rather than a pinned choice. **A GIL-bound `func` does not
+flatten the pool** — on an 11-core laptop at eight threads, read-only: `otsu`
+2.98x, `label` 3.46x; writing: 1.99x and 2.16x. Neither function is the majority
+of a run at this geometry, so most of what the pool overlaps is the codec either
+way, and the GIL dampens the speedup without deciding it. Read the pair as cost
+against scalability: `label` is the more expensive function both serially (390 vs
+281 ms) and at eight threads (113 vs 94 ms) — it never overtakes — but its higher
+ratio buys back more of its own extra cost. `process` loses everywhere by 4–8x,
+dominated by ~1 s per worker spawning and importing ngio in the child.
+
+There is no such thing as a one-worker pool to measure: both parallel mappers
+short-circuit to `BasicMapper` when the pool resolves to one, so `basic`,
+`threaded@1` and `process@1` are one code path. The first sweep of this block
+returned exactly that — three rows agreeing to within noise — and `basic` is now
+the single serial row, with pools starting at two. A pool also never exceeds the
+unit count, so a `workers` wider than the ROIs resolves down silently; the note
+says so on any row where it binds, because a flat tail otherwise reads as "more
+workers stop helping" when the pool simply stopped growing.
+
+`peak_mb` is `tracemalloc`, and it sees nothing a worker *process* allocates —
+the `process` rows report a fraction of a megabyte while doing all the work in
+children. The suite has no `NATIVE = True` to suppress the column with, so those
+rows carry the caveat in their note instead.
+
+**This block needs an ngio newer than the `internal` extra installs.** None of
+`ThreadedMapper`, `ProcessMapper` or `reduce_as_*` exists in 1.0.0, so in the
+default interpreter it degrades to a single `unavailable` row and the other four
+blocks run untouched. Point `[[environments]]` at a checkout to measure it — a
+`—` column beside a numbered one reads correctly as *parallel mappers are new*.
 
 `get`/`set` are deliberately absent: they are a thin layer over zarr, so timing
 them mostly re-measures zarr. What that layer costs is `compare-io`'s question.
