@@ -325,6 +325,45 @@ keep = true
 
 
 # ===========================================================================
+# Environments — one per implementation, always
+# ===========================================================================
+#
+# Each implementation installs into its own `uv` environment; that is
+# unconditional rather than a fallback, because these peers pin overlapping
+# dependency ranges that intersect only narrowly and `iohub` needs Python 3.12
+# while ngio supports 3.11.
+#
+# Only `ngio` is pinned here. The peers install what their adapters declare, so
+# this file measures "whatever resolved today" for them -- fine for a sweep you
+# re-run, wrong for a number you publish. `impl_version` is on every row; pin
+# the peers too before citing anything.
+#
+# NGIO IS PINNED TO THE RELEASE CANDIDATE BRANCH, not to a local checkout. A
+# local editable install is a moving target, and its recorded version is wrong:
+# the editable build stamps `ngio.__version__` once and does not refresh it on a
+# commit switch, so `impl_version` reports whatever was built first. Installed
+# by URL the same commit reports `1.0.2.dev50+g9146c72d2`, which names what was
+# actually measured.
+#
+# This suite takes ONE ngio per run -- there is no environments axis, and
+# `[[environments]]` is rejected outright. To get both versions, run the file
+# twice, flipping the two lines below. The CSV appends, so the rows land
+# together; they both say `impl = ngio` and are told apart only by
+# `impl_version`, so write that column down before you merge them.
+#
+# One wart to know about: `--list` prints each implementation's DECLARED pins,
+# not the override below. It reads the adapter's own `REQUIRES` rather than
+# resolving `[env.<impl>]`, so the dry run will show a bare `ngio` even though
+# the real run installs the branch. The pin is applied -- verified, a run under
+# it records `impl_version = 1.0.2.dev50+g9146c72d2` -- but `--list` is not the
+# place to confirm it. Check the `impl_version` column instead.
+
+[env.ngio]
+requires = ["ngio @ git+https://github.com/BioVisionCenter/ngio@feat/peformance-optimizations"]
+# requires = ["ngio==1.0.0"]    # flip and re-run for the released version
+
+
+# ===========================================================================
 # Images — every spec used here is defined here
 # ===========================================================================
 #
