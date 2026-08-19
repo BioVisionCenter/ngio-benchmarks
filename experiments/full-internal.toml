@@ -1,0 +1,264 @@
+# Every internal block, swept as wide as fits in an hour.
+#
+# The third tier of config file in this directory, and the one to reach for when
+# the question is "what does ngio do across the board" rather than any single
+# decision. `smoke-internal.toml` proves the runner works and produces nothing
+# worth reading; `reference-internal.toml` documents every key and measures the
+# defaults; this file is the actual sweep.
+#
+#   uv run ngio-bench-internal experiments/full-internal.toml --list
+#   uv run ngio-bench-internal experiments/full-internal.toml
+#
+# Run `--list` first. It prints the declared case count and `runs/case` without
+# installing anything, which is the only cheap way to notice that an axis was
+# widened by one value and the run just grew by twenty minutes.
+#
+# BUDGET: 216 declared, 139 measured, roughly 35-50 minutes on an 11-core
+# laptop. The 139 is 17 + 36 + 64 + 12 + 10, and the gap up to 216 is `Skip`s --
+# cases the blocks decline to measure and which emit no row at all, rather than
+# cases that failed. That ceiling is deliberate, not an accident of what seemed
+# interesting: the arithmetic is in the case-count note above each [axes.*]
+# table, and what was left out to reach it is at the bottom of this header.
+#
+# WHAT TO READ AGAINST WHAT. Five blocks, and none of their numbers means much
+# alone. Each block's own docstring argues its case in full; this is the map:
+#
+#   consolidate   mode against mode at fixed geometry, and `peak_mb` against
+#                 `seconds`. numpy is the FASTEST and has a hard memory ceiling;
+#                 dask and coarsen are chunk-bounded and stay flat. A table read
+#                 on time alone recommends the one that will not fit.
+#
+#   layout        every row is the same bytes read back through a different
+#                 on-disk shape. Read them against each other, never against
+#                 another block -- the absolute number is a fact about this
+#                 machine's page cache as much as about the layout.
+#
+#   roi           aligned against straddling at matched `size`. The ratio IS the
+#                 measurement; the two milliseconds are not. It should shrink as
+#                 `size` grows and the wasted edge chunks amortise, which is what
+#                 sweeping `size` here is for.
+#
+#   algorithms    a series, so the SHAPE is visible. One timing cannot tell O(n)
+#                 from O(n^2); six can. Read down the `n` column, not across.
+#
+#   iterators     arms against arms and widths against widths -- see
+#                 `iterators-workers.toml` and `iterators-api.toml`, which own
+#                 that argument and carry the control numbers for it.
+#
+# CONTROL: not yet measured.
+#
+#   This file ships without one on purpose. Every other committed config here
+#   carries a table of numbers from its first run, and those are worth more than
+#   they look: a re-run that misses them is how you discover the fixture changed,
+#   the machine was busy, or the branch regressed. Fill this in from your own
+#   first run and commit it -- machine, ngio commit, then the arithmetic.
+#
+#   machine:  <cores, model, RAM>
+#   ngio:     <commit>
+#   wall:     <total>
+#
+#   block         cases   wall    what moved
+#   -----------   -----   -----   ----------------------------------------
+#   algorithms       17
+#   consolidate      36
+#   iterators        64
+#   layout           12
+#   roi              10
+#
+#   Read the ratios and not the milliseconds; everything here is
+#   machine-dependent, and the ratios are what survive a change of laptop.
+#
+# DELIBERATELY LEFT OUT, and each one is a decision rather than an oversight:
+#
+#   consolidate at z >= 512 (>= 1 GB). The memory-ceiling question has four
+#   dedicated files already -- consolidate-memory-scaling{,-16gb}.toml and
+#   consolidate-cap-{sweep,shipped}.toml -- which run at `repeats = 1` precisely
+#   because those cases are minutes each. `numpy` peaks at ~1.5x the data, so
+#   duplicating them here would risk an OOM in the middle of a long sweep.
+#
+#   consolidate `chunk_size`. It is a real axis and it is NOT in `AXIS_FIELDS`
+#   (ngio_benchmarks/internal/_run.py), so sweeping it produces no CSV column --
+#   only the `case` label carries the value, and a reader diffing two CSVs would
+#   not see it at all. Pinned at "default" until that is fixed.
+#
+#   iterators `process`. Settled, and settled expensively: it loses to `threaded`
+#   at every width under both `work` values by 4-8x, dominated by ~1 s per worker
+#   importing ngio in a spawned child. `iterators-workers.toml` has the 28 rows
+#   that establish it. Re-measuring a known answer costs ~8 minutes here.
+#
+#   iterators `work = "stub"` and `workers = "auto"`. `stub` costs 1.5% of a run
+#   and flatters every mapper equally. `"auto"` resolves to min(32, cpu + 4) --
+#   a fact about the machine, which makes it a value nobody can read off the
+#   config file.
+#
+#   Any fifth `layout` or third `roi` alignment. Both axes are CLOSED: a config
+#   may subset the declared labels but cannot invent one. Widening those needs a
+#   code change, not a config.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- selection -------------------------------------------------------------
+
+# All five. Named explicitly rather than omitted so that a block added later
+# does not silently join this sweep and change what the numbers below mean.
+blocks = ["algorithms", "consolidate", "iterators", "layout", "roi"]
+
+# --- measurement -----------------------------------------------------------
+
+# Forced across every block rather than left to each block's own default, so one
+# CSV does not mix 3-repeat and 5-repeat rows. Note this LOWERS `roi`, which
+# declares no `REPEATS` and would otherwise fall back to 5.
+#
+# `warmup + repeats` is not how many times a case runs: each case runs `warmup`
+# times, then `repeats` times for the timing, then once or twice more with
+# `tracemalloc` on. Here that is 6 runs per case, and `--list` prints it.
+repeats = 3
+warmup  = 1
+
+# --- output ----------------------------------------------------------------
+
+# Relative to THIS FILE, not the working directory. Gitignored, like every CSV
+# under experiments/ -- the recipe is the committable artefact.
+csv = "full-internal.csv"
+
+# Not set, and it would be ignored anyway: `keep` does not apply across
+# environments, because a fixture written by one ngio and read back by another
+# is a different experiment from the one that was asked for. Every environment
+# gets its own temp root, so this sweep rebuilds its fixtures each run. That is
+# a real share of the wall clock at the larger `z` values.
+# keep = false
+
+
+# ===========================================================================
+# Environments
+# ===========================================================================
+#
+# One entry, and it has to be a checkout. `iterators` needs an ngio newer than
+# the `internal` extra installs -- `ThreadedMapper`, `with_halo`, `StitchConfig`,
+# `ObjectDetectionIterator` and `reduce_to_table` all postdate 1.0.0 -- so
+# without this the block degrades to a single `unavailable` row and four fifths
+# of the sweep still runs. The other four blocks are indifferent to it.
+#
+# A second entry would make every row a version comparison and double the wall
+# clock. That is a different question, and `v1-vs-worktree.toml` already asks it.
+
+[[environments]]
+name = "head"
+ngio = "local:../../ngio"
+
+
+# ===========================================================================
+# Axes — everything below here is inside a table; keep settings above
+# ===========================================================================
+#
+# An axis REPLACES the block's declared values; it never extends them. Every
+# entry names its block, because a bare `z` meaning "whichever blocks happen to
+# have one" describes the suite at the moment the file was written rather than
+# the experiment -- and `z` is declared by three of these five blocks with three
+# different geometries behind it.
+
+# 30 declared, 17 measured. The block bounds each kernel's useful range and
+# raises `Skip` outside it, and a skipped case emits NO ROW at all:
+#
+#   overlap       64 .. 2048     -> 64, 128, 256, 512, 1024, 2048      (6)
+#   masking_roi  256 .. 4096     -> 256, 512, 1024, 2048, 4096         (5)
+#   roi_table   1000 .. 50000    -> 1024, 2048, 4096, 10000, 25000,
+#                                   50000                              (6)
+#
+# The three added points -- 128, 512, 25000 -- fill in BETWEEN the shipped
+# bounds rather than pushing past them. That is the whole point of this block:
+# `overlap` is O(n^2) and needs enough points to show it, and the bounds exist
+# because an O(n^2) kernel at `roi_table`'s sizes would not return.
+#
+# Entirely in memory -- no store is touched -- so this is the cheapest block
+# here by an order of magnitude. ~2 minutes.
+[axes.algorithms]
+kernel = ["overlap", "masking_roi", "roi_table"]   # [open]  which algorithm
+n      = [64, 128, 256, 512, 1024, 2048, 4096, 10000, 25000, 50000]  # [open]
+
+# 36 declared, 36 measured -- no skips, the product is rectangular here.
+#
+# Geometry: the fixture is (c, z, 512, 512) 4-D, or (t, c, z, 512, 512) 5-D the
+# moment `t > 1`, and it is rebuilt fresh per case. Bytes are c*t*z*512*512*2:
+#
+#            c=1 t=1    c=2 t=1    c=1 t=2    c=2 t=2
+#   z=16        8 MB      16 MB      16 MB      32 MB
+#   z=64       32 MB      64 MB      64 MB     128 MB
+#   z=256     128 MB     256 MB     256 MB     512 MB
+#
+# `t` is in the sweep because it is not merely "more bytes": `t > 1` switches
+# the fixture to a 5-D layout with (1,1,1,256,256) chunks, and a time series is
+# a different shape from a taller volume. Whether the three modes rank the same
+# way on both is the question, and it needs both axes to answer.
+#
+# 512 MB is the ceiling here, deliberately -- see the header on why the
+# memory-ceiling sweep lives in its own files. ~15 minutes.
+[axes.consolidate]
+mode       = ["dask", "numpy", "coarsen"]   # [open]  which pyramid builder
+                                            #   dask     chunk-bounded, flat RAM
+                                            #   numpy    fastest, RAM ~ 1.5x data
+                                            #   coarsen  chunk-bounded, no zoom
+z          = [16, 64, 256]                  # [open]  depth; see the table above
+c          = [1, 2]                         # [open]  channels
+t          = [1, 2]                         # [open]  2 switches to a 5-D layout
+chunk_size = ["default"]                    # [open]  dask array.chunk-size;
+                                            #   pinned, see the header
+
+# 12 declared, 12 measured.
+#
+# Same bytes through four on-disk shapes, at three depths. The fixture is
+# (2, z, 1024, 1024) uint16 -- 64 MB at z=16, 256 MB at z=64, 512 MB at z=128 --
+# and the measured call is a full-level numpy read.
+#
+# `z` is here because the interesting claim is not which layout wins at one
+# depth but whether the ranking holds as the read grows. Sharding in particular
+# should look worse on a small read and better on a large one.
+#
+# `layout` is a CLOSED axis: these four labels are the vocabulary, and chunk and
+# shard shapes are not independent knobs (`sharded` + `uncompressed` is not a
+# case anyone wants). ~8 minutes, most of it building fixtures.
+[axes.layout]
+layout = ["chunks512", "chunks128", "sharded", "uncompressed"]  # [closed]
+z      = [16, 64, 128]                                          # [open]
+
+# 10 declared, 10 measured.
+#
+# Read amplification from chunk misalignment, traced across region size. The
+# fixture is (2, 16, 1024, 1024) at (1,1,512,512) chunks -- byte-identical to
+# `layout`'s `chunks512` at z=16, so the two blocks share one store on disk.
+#
+# `size` stops at 768 because `straddling` starts at pixel offset 137 and the
+# fixture's y/x extent is 1024: 768 + 137 = 905 fits, 1024 would not. The
+# hypothesis the sweep tests is that the aligned/straddling ratio shrinks as the
+# region grows and the discarded edge chunks amortise.
+#
+# `alignment` is CLOSED -- the two offsets are only meaningful against the
+# block's own (1,1,512,512) chunking, which is a module constant, not an axis.
+# Seconds in total.
+[axes.roi]
+alignment = ["aligned", "straddling"]        # [closed]  offset 0, or 137
+size      = [64, 128, 256, 512, 768]         # [open]    region edge in pixels
+
+# 128 declared, 64 measured. `basic` is serial, so only `workers = 1` reaches
+# it and its three wider cases are skipped; both parallel mappers short-circuit
+# to `BasicMapper` when the pool resolves to one, so `threaded` at one worker is
+# skipped too. What survives is 8 arms x 2 work x (basic@1 + threaded@{2,4,8}).
+#
+# This is the broad pass over every arm at every width. The two focused files
+# own the arguments: `iterators-workers.toml` for which mapper and how wide,
+# `iterators-api.toml` for what each feature costs. Both carry control numbers.
+#
+# z = 16 is (1, 16, 1024, 1024) uint16 -- 32 MB across 64 ROIs of 512x512.
+# ~15 minutes, and `stitch` is most of it: its post-map resolve is a serial tail
+# roughly eight times the size of the map it follows.
+[axes.iterators]
+iterator = ["segmentation", "halo", "stitch", "detection",
+            "features", "table", "processing", "masked"]  # [open]  which arm
+work     = ["otsu", "label"]                  # [open]  otsu holds the GIL,
+                                              #         label releases it
+mapper   = ["basic", "threaded"]              # [open]  see header re: process
+workers  = [1, 2, 4, 8]                       # [open]  1 is basic's alone
+z        = [16]                               # [open]  depth; 16 is ~32 MB

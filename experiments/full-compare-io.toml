@@ -1,0 +1,257 @@
+# Every implementation, every operation, every image shape.
+#
+# The third tier of config file in this directory. `smoke-io.toml` proves the
+# runner works; `reference-compare-io.toml` documents every key and sweeps six
+# images; this file is the complete matrix -- all six implementations against all
+# six operations against all eight built-in image specs, plus two custom ones
+# that close the only real gap in the registry.
+#
+#   uv run ngio-bench-compare-io experiments/full-compare-io.toml --list
+#   uv run ngio-bench-compare-io experiments/full-compare-io.toml
+#
+# Run `--list` first, always. Every implementation installs into its own isolated
+# environment before the first measurement, and this file selects all six -- a
+# config that turns out to select nothing useful is expensive to discover any
+# later than the dry run.
+#
+# BUDGET: 420 declared, 414 spawned, 408 measured -- roughly 55-70 minutes on an
+# 11-core laptop. The dominant cost is not the reads. It is that this suite runs
+# ONE CHILD PROCESS PER CASE -- that is what makes the memory columns per-case
+# rather than per-implementation -- so ~2 seconds of interpreter start is charged
+# 414 times, about a quarter of the total on its own. Widening any axis
+# multiplies that toll as much as it multiplies the measuring.
+#
+# One image dominates the rest: on the committed `reference-compare-io.csv`,
+# `chunks64` is 46% of all measurement time, because a (1,1,64,64) grid puts
+# 4096 chunks in a plane and per-chunk overhead is the thing it exists to show.
+# It is the first knob if this ever has to get shorter.
+#
+# WHAT TO READ AGAINST WHAT. The rows are not a leaderboard; almost every useful
+# statement here is a ratio between two specific cells.
+#
+#   zarr is the floor.        Every other row is read against it. zarr-python is
+#                             what ngio is built on, so `ngio / zarr` is the
+#                             price of the convenience layer and nothing else --
+#                             which is the number this whole suite exists for.
+#
+#   zarrs against zarr.       The same code under the Rust codec pipeline. The
+#                             difference is the decoder, because everything above
+#                             it is identical.
+#
+#   tensorstore is a ceiling. It decodes outside Python entirely. Read it as
+#                             "what the bytes could cost", not as a peer.
+#
+#   aligned against straddling at matched image and impl. The ratio is read
+#                             amplification -- a region inside chunk boundaries
+#                             touches the minimum number of chunks, the same
+#                             region offset by half a chunk fetches and discards
+#                             every chunk on each edge. `roi` in the internal
+#                             suite asks the same question of ngio alone.
+#
+#   chunks64 / chunks512 against medium. Identical bytes, three chunk grids. The
+#                             per-chunk overhead is what separates them, and it
+#                             is why `chunks64` is the slowest image in the file
+#                             by an order of magnitude on several implementations.
+#
+#   mode=dask against the `dask` row. Comparable on reads -- both build a graph
+#                             over the same chunk grid. NOT comparable on writes:
+#                             ngio stores behind a process-global lock and
+#                             serialises its flushes, while the `dask` row passes
+#                             `lock = false` and lets them race. On an unsharded
+#                             `write_full` a block is exactly one chunk, so the
+#                             lock costs ~3x for nothing; on `sharded` and on
+#                             every straddling write it is the only reason the
+#                             output is correct. CHECK THE `checksum` COLUMN
+#                             before believing any write row -- an unlocked write
+#                             to the sharded image has been measured writing 87%
+#                             of the array wrong, and it is fast because it is
+#                             wrong.
+#
+#   peak_mb against proc_peak_mb. `zarrs`, `tensorstore` and `z5py` declare
+#                             NATIVE, so their `peak_mb` is NaN rather than a
+#                             zero that would read as thrift -- `tracemalloc`
+#                             cannot see a buffer a C++ or Rust extension
+#                             allocates. `proc_peak_mb` is the column for those.
+#
+# CONTROL: not yet measured.
+#
+#   Fill this in from your own first run and commit it. A re-run that misses the
+#   control is how you find out the fixture changed, the machine was busy, or a
+#   peer released a regression.
+#
+#   machine:  <cores, model, RAM>
+#   ngio:     <commit>
+#   wall:     <total>
+#
+#   op / image        ngio    zarr    zarrs    dask    tensorstore    z5py
+#   ---------------   -----   -----   ------   -----   -----------    ----
+#   read_full medium
+#   read_roi_straddling medium
+#   write_full medium
+#   write_full sharded
+#
+#   Read the ratios and not the milliseconds.
+#
+# DELIBERATELY LEFT OUT:
+#
+#   [env.<impl>] pins. Every implementation installs what its adapter declares,
+#   so this file measures "whatever resolved today". That is the right default
+#   for a sweep you re-run, and the wrong one for a number you cite -- when you
+#   publish these, pin the peers first and say which versions they were. The CSV
+#   records `impl_version` on every row either way.
+#
+#   A `local:` pin on ngio. This file measures installed ngio, not a working
+#   tree, because the question is "how does ngio compare to its peers" rather
+#   than "did this branch regress". Point `[env.ngio] requires` at a checkout if
+#   you want the latter -- and note that the comparison suites REJECT
+#   `[[environments]]` outright; per-implementation pinning is the only form.
+#
+#   blosc and lz4 codecs, and the uint8 / int16 / uint32 dtypes. Two custom specs
+#   are enough to find out whether codec and width move the ranking at all. If
+#   either does, that is a finding worth its own focused file, not a reason to
+#   have swept five codecs blind at 42 cases each.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- the three axes --------------------------------------------------------
+#
+# A singular key is an axis and holds a list of labels; a plural table defines
+# what those labels mean. `image` selects, `[images.<name>]` defines.
+
+# All six.
+#
+#   ngio          open_image / get_as_numpy / set_array, or get_as_dask — see [options.ngio]
+#   zarr          zarr-python directly — the floor every other row is read against
+#   zarrs         the same code under the zarrs (Rust) codec pipeline
+#   dask          da.from_array / da.to_zarr, .compute() inside the timing
+#   tensorstore   the same bytes decoded outside Python — a ceiling, not a peer
+#   z5py          a C++ zarr/n5 implementation with an h5py-shaped API
+impl = ["ngio", "zarr", "zarrs", "dask", "tensorstore", "z5py"]
+
+# All six. The aligned/straddling pair is the read-amplification question and
+# the reason the ops come in threes rather than as one read and one write.
+op = [
+  "read_full", "read_roi_aligned", "read_roi_straddling",
+  "write_full", "write_roi_aligned", "write_roi_straddling",
+]
+
+# All eight built-ins, plus two defined below.
+#
+#   small          (1,16,512,512)    8 MB    the floor for per-call overhead
+#   medium         (1,64,1024,1024)  128 MB  the reference geometry
+#   large          (1,256,1024,1024) 512 MB  where per-chunk cost amortises
+#   chunks64       medium bytes, (1,1,64,64) chunks    — per-chunk overhead, worst case
+#   chunks512      medium bytes, (1,1,512,512) chunks  — per-chunk overhead, best case
+#   sharded        medium bytes, (1,1,128,128) chunks in (1,4,1024,1024) shards
+#   uncompressed   medium bytes, compressors = "none"  — isolates the codec
+#   v2             medium bytes, zarr v2 / NGFF 0.4
+#   medium_zstd    medium bytes, zstd rather than the default blosc pipeline
+#   medium_f32     medium geometry as float32 — 256 MB, and a different codec path
+image = [
+  "small", "medium", "large",
+  "chunks64", "chunks512", "sharded",
+  "uncompressed", "v2",
+  "medium_zstd", "medium_f32",
+]
+
+# --- measurement -----------------------------------------------------------
+
+# Five timed runs, which is this suite's own default, stated rather than
+# inherited so the file says what it measured. With one warmup and two
+# allocation passes that is 8 runs per case; `--list` prints it.
+#
+# Reads additionally get one untimed call for the `checksum` column, so a read
+# is never timed completely cold. Writes do not.
+repeats = 5
+warmup  = 1
+
+# --- output ----------------------------------------------------------------
+
+# Relative to THIS FILE. Gitignored, like every CSV under experiments/.
+csv = "full-compare-io.csv"
+
+# FALSE, and deliberately against the advice in `reference-compare-io.toml`,
+# which says a long sweep is exactly when to keep fixtures. The arithmetic wins:
+#
+# A write target is one store per (impl, op, image) and it is cleared at its own
+# case's build -- never removed during the run. The ten specs here are ~1.7 GB
+# per full copy, so `write_full` alone leaves ~10 GB behind across six
+# implementations, plus the ROI-write stores, plus ~1.7 GB of parent-written
+# sources and read fixtures. Call it 14 GB.
+#
+# Peak disk during the run is the same either way. What `keep` changes is
+# whether that 14 GB is still there afterwards. `.data/` in this checkout is
+# already 5.5 GB, so measure your free space before flipping this -- the failure
+# mode is ENOSPC at minute forty, which costs the whole run rather than the ~3
+# minutes of fixture rebuild this setting saves.
+keep = false
+
+# Suppress each environment's install output. Default: false.
+# quiet = false
+
+
+# ===========================================================================
+# Images — extend the named registry the `image` axis draws from
+# ===========================================================================
+#
+# The eight built-ins are all uint16 with `compressors = "auto"`, which leaves
+# the registry's other codecs and dtypes entirely unexercised. These two are the
+# cheapest way to find out whether either moves the ranking: both keep `medium`'s
+# shape and chunk grid exactly, so the only thing that differs from the `medium`
+# rows is the one property being tested.
+#
+# `levels` is deliberately absent from both. The io fixture is a SINGLE-LEVEL
+# store -- pyramids are `compare-create`'s question -- so a `levels` here would
+# document a property nothing reads.
+
+[images.medium_zstd]
+shape       = [1, 64, 1024, 1024]
+chunks      = [1, 1, 256, 256]
+compressors = "zstd"
+roi_size    = 512
+
+[images.medium_f32]
+shape       = [1, 64, 1024, 1024]
+chunks      = [1, 1, 256, 256]
+dtype       = "float32"
+roi_size    = 512
+
+
+# ===========================================================================
+# Options — one implementation's own settings, swept
+# ===========================================================================
+#
+# Nothing here sweeps by default: an option a config does not name keeps the
+# adapter's own default. `mode` is the only option this suite declares, and it
+# is the one axis that doubles a row count, so it is also the only one that
+# needs justifying. It doubles ngio's rows and nothing else's: 6 ops x 10 images
+# x (5 single-row impls + 2 ngio modes) = 420.
+
+[options.ngio]
+mode = ["numpy", "dask"]
+
+
+# ===========================================================================
+# Case count
+# ===========================================================================
+#
+# 420 declared, 414 child processes, 408 measured. Two implementations decline
+# two images, and the two refusals are NOT alike -- which is visible in the
+# `--list` output and worth knowing before reading the wall clock:
+#
+#   zarrs x v2         6 rows   zarrs is zarr v3 only. Declared incompatible by
+#                               the adapter's FORMATS, so the parent excludes
+#                               these before spawning: they cost nothing and
+#                               `--list` names them under `unsupported:`.
+#
+#   z5py  x sharded    6 rows   z5py does not implement zarr v3 sharding. This
+#                               one is raised INSIDE the child at build time, so
+#                               the process still starts and still costs its ~2
+#                               seconds. `--list` cannot predict it.
+#
+# Both are facts about those libraries and are the reason the two images are in
+# the sweep at all. 420 - 6 excluded = 414 spawned; 414 - 6 raised = 408 rows
+# with a number in them.

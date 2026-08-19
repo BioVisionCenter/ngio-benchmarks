@@ -134,7 +134,7 @@ The five blocks, and the decision each one informs:
 | `layout` | `layout` × `z` | same bytes, different chunk/shard shape |
 | `roi` | `alignment` × `size` | chunk-aligned vs straddling reads |
 | `algorithms` | `kernel` × `n` | scaling curves for ngio's own algorithms |
-| `iterators` | `iterator` × `work` × `mapper` × `workers` | does fanning a map out actually pay? |
+| `iterators` | `iterator` × `work` × `mapper` × `workers` | does fanning a map out actually pay, and what does reconciling tiles cost? |
 
 `algorithms` reports a series so the *shape* is visible — one timing cannot tell
 O(n) from O(n²), four can. Its three kernels have different useful `n` ranges, so
@@ -147,12 +147,55 @@ and it pins the parallel scenario's tally *equal* to the serial one — store
 operations are invariant to concurrency by design there. Wall clock and peak
 memory are the only instruments that can price a mapper, and both are here.
 
-Its two arms are chosen so the pair tells the whole story. `features` reduces
-read-only, so its curve is what the pool is worth on its own. `segmentation`
-writes, and every writing map ends in a rebuild of the *whole* pyramid that no
-pool touches — so its curve is the same speedup with a fixed serial tail bolted
-on, and the gap between the two is Amdahl measured rather than asserted.
-`consolidate` prices that tail on its own, which is what lets the two compose.
+Its two default arms are chosen so the pair tells the whole story. `features`
+reduces read-only, so its curve is what the pool is worth on its own.
+`segmentation` writes, and every writing map ends in a rebuild of the *whole*
+pyramid that no pool touches — so its curve is the same speedup with a fixed
+serial tail bolted on, and the gap between the two is Amdahl measured rather than
+asserted. `consolidate` prices that tail on its own, which is what lets the two
+compose.
+
+Six further arms are implemented and out of the default, because they ask what a
+*feature* costs rather than which mapper to reach for, and
+`experiments/iterators-api.toml` is where they are swept. Three of them are the
+same Amdahl question one level up — a tiled map is embarrassingly parallel only
+until a tile needs to know what its neighbour saw:
+
+| arm | what it adds | read it against |
+| --- | --- | --- |
+| `halo` | `with_halo`: grow the read, crop the write | `segmentation` |
+| `stitch` | halo, then resolve ids across tile boundaries | `halo` |
+| `detection` | halo, then `detect` + NMS over the duplicates | its own `workers` column |
+| `table` | `reduce_to_table` + the default `coalesce` | its own `workers` column |
+| `processing` | an image out instead of a label | `segmentation` |
+| `masked` | one ROI per object off a masking table | `segmentation` |
+
+`halo` and `stitch` share a per-ROI function with `segmentation`, so those two
+subtractions are real. `detection` and `table` do not — a detector returns boxes
+and a table row has to carry the id of the object it measures, neither of which
+is a heavier version of what `features` computes — so those arms are read down
+their own `workers` column instead: the fan-out scales, the join does not.
+
+What that sweep found, on an 11-core laptop at z=16 with 64 ROIs: **the halo
+costs what it reads and nothing else** (+181 to +337 ms serially, and it still
+reaches 2.06x on four threads where `segmentation` reaches 2.17x), while **the
+stitch resolve is a serial tail eight times the size of the map it follows** —
+`stitch - halo` is +3.5 s, and it flattens the pool from 2.06x to 1.11x with
+`cpu / wall` falling from 4.21x to 1.25x alongside it. That is the same Amdahl
+shape as the pyramid rebuild, an order of magnitude larger. **NMS dominates
+`detection`** even at 64 boxes a tile: 1.15x on four threads, with `otsu` and
+`label` within 2% of each other — when the `work` axis stops mattering, the row
+is no longer measuring the mapped function. The `coalesce` join, by contrast, is
+a few percent of a run rather than a tail worth naming.
+
+Two things the first run of those arms established, and both are in the block as
+constants rather than as prose. `stitch` needs a halo covering *every* tiled
+axis, which at this fixture's `z`-chunk of 1 means a `z` margin as well as `x`
+and `y`. And `detection` caps each tile at 64 boxes, largest first: uncapped,
+`ndimage.label` finds thousands of components per tile and ngio's NMS — a greedy
+quadratic loop in Python — took 7.0 s where `segmentation` took 61 ms at the same
+geometry. A real detector reports tens per tile, having already run its own
+per-tile NMS; raising the cap is how to price the NMS on its own.
 
 The `work` axis is there because a thread pool can only overlap what lets go of
 the GIL, so a sweep with a trivial `func` measures the machinery's ceiling and
@@ -189,9 +232,10 @@ children. The suite has no `NATIVE = True` to suppress the column with, so those
 rows carry the caveat in their note instead.
 
 **This block needs an ngio newer than the `internal` extra installs.** None of
-`ThreadedMapper`, `ProcessMapper` or `reduce_as_*` exists in 1.0.0, so in the
-default interpreter it degrades to a single `unavailable` row and the other four
-blocks run untouched. Point `[[environments]]` at a checkout to measure it — a
+`ThreadedMapper`, `ProcessMapper`, `map`/`reduce`, `with_halo`, `StitchConfig`,
+`ObjectDetectionIterator` or `reduce_to_table` exists in 1.0.0, so in the default
+interpreter it degrades to a single `unavailable` row and the other four blocks
+run untouched. Point `[[environments]]` at a checkout to measure it — a
 `—` column beside a numbered one reads correctly as *parallel mappers are new*.
 
 `get`/`set` are deliberately absent: they are a thin layer over zarr, so timing

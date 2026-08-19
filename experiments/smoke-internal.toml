@@ -21,3 +21,19 @@ size = [512]
 [axes.algorithms]
 kernel = ["overlap", "roi_table"]
 n = [256, 1000]
+
+# `features` only, and no `process`: a spawn-based pool pays ~1 s per worker
+# importing ngio, which is minutes rather than seconds. Against the ngio the
+# `internal` extra installs this block degrades to one `unavailable` row —
+# that is the smoke test for the degradation path, not a failure.
+#
+# `table` rides along at `basic` only: it is the cheapest of the new-API arms and
+# it exercises the path the others share -- an ngio too old to have
+# `reduce_to_table` is also too old to have `with_halo` or `detect`, so one arm
+# is enough to smoke the degradation.
+[axes.iterators]
+iterator = ["features", "table"]
+work = ["otsu"]
+mapper = ["basic", "threaded"]
+workers = [1, 4]
+z = [2]

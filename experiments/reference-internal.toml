@@ -24,7 +24,12 @@
 # --- selection -------------------------------------------------------------
 
 # Which blocks to run. Default: all of them. An unknown name is an error.
-# blocks = ["algorithms", "consolidate", "layout", "roi"]
+# blocks = ["algorithms", "consolidate", "iterators", "layout", "roi"]
+#
+# `iterators` needs an ngio newer than the `internal` extra installs: none of
+# `ThreadedMapper`, `ProcessMapper` or `reduce_as_*` exists in 1.0.0. Without an
+# `[[environments]]` entry pointing at a newer one it degrades to a single
+# `unavailable` row, which is by design and leaves the other four blocks alone.
 
 # --- measurement -----------------------------------------------------------
 
@@ -171,3 +176,48 @@
 # [axes.algorithms]
 # kernel = ["overlap", "masking_roi", "roi_table"]   # [open]
 # n = [64, 256, 1024, 2048, 4096, 10000, 50000]      # [open]
+
+# Mapping over an iterator: does fanning it out actually pay, and at what cost?
+#
+# Serial is measured once, under `basic` at `workers = 1`. `basic` takes no
+# worker count, and a parallel mapper whose pool resolves to one short-circuits
+# *to* `BasicMapper` — so the other combinations are skipped and counted rather
+# than putting one code path in three rows under labels that imply otherwise.
+# [axes.iterators]
+# iterator = ["segmentation", "features"]   # [open]  writing map, or read-only reduce
+# work = ["otsu", "label"]                  # [open]  the mapped function; + "stub"
+# mapper = ["basic", "threaded", "process"] # [open]  which scheduler
+# workers = [1, 2, 4, 8]                    # [open]  1 is basic's; pools start at 2
+# z = [16]                                  # [open]  z-depth; 16 is ~32 MB
+#
+# `iterator` has six further values, all out of the default because they price a
+# *feature* rather than a scheduler. `experiments/iterators-api.toml` sweeps them:
+#
+#   halo         `with_halo`: grow the read, crop the write   (read vs segmentation)
+#   stitch       halo, then resolve ids across tiles          (read vs halo)
+#   detection    halo, then `detect` + NMS                    (read down `workers`)
+#   table        `reduce_to_table` + the default `coalesce`   (read down `workers`)
+#   processing   an image out instead of a label              (read vs segmentation)
+#   masked       one ROI per object off a masking table       (read vs segmentation)
+#
+# `halo` and `stitch` share a per-ROI function with `segmentation`, so those two
+# subtractions are real. `detection` and `table` do not -- a detector returns
+# boxes, and a table row carries the id of the object it measures -- so neither
+# is `arm - features` and both are read down their own `workers` column.
+#
+# `work` decides how much of a run a thread pool can overlap at all, so it is not
+# a detail. `otsu` is a numpy histogram scan and holds the GIL in isolation;
+# `label` is `scipy.ndimage.label` and releases it. `stub` is a near-free
+# threshold, useful for isolating the iterator machinery and a poor default
+# because it flatters every mapper equally.
+#
+# `workers = "auto"` is what a bare `ThreadedMapper()` gives — min(32, cpu + 4).
+# It is not in the default because what it resolves to is a fact about the
+# machine, and a default nobody can read off the file is a poor one.
+#
+# A pool never exceeds the unit count either, so a `workers` wider than the ROIs
+# resolves down silently. The row's note says so wherever that binds.
+#
+# `z` is the knob for asking whether a pool pays off better with more work per
+# run. Lowering the chunk shape instead would raise the ROI count and *lower*
+# the speedup, which is why the block pins chunks at 512 and leaves depth open.

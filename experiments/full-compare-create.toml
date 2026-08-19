@@ -1,0 +1,479 @@
+# Every writer, every filter it can express, both codec pipelines.
+#
+# The third tier of config file in this directory. `smoke-create.toml` proves the
+# runner works; `reference-compare-create.toml` documents every key; this file is
+# the complete matrix that still finishes in an evening.
+#
+#   uv run ngio-bench-compare-create experiments/full-compare-create.toml --list
+#   uv run ngio-bench-compare-create experiments/full-compare-create.toml
+#
+# Run `--list` first, and here it matters more than anywhere else in this
+# directory. This is the one suite where a naive full product is mostly
+# `unsupported`: six writers that disagree about which filters exist, which zarr
+# formats they support, and which codec pipeline they will tolerate. `--list`
+# prints the whole plan, names every excluded cell and its reason, and installs
+# nothing.
+#
+# BUDGET: 264 child processes, roughly 95-110 minutes on an 11-core laptop. As
+# in `compare-io`, this suite runs ONE CHILD PROCESS PER CASE, so ~3 seconds of
+# interpreter start is charged per row that actually runs. Cells excluded by a
+# declaration -- a filter a writer has no name for, a pipeline it declines --
+# cost nothing at all: the parent never spawns them.
+#
+# That budget is measured, not modelled. One `create_pyramid` run at
+# `method=default`, zstd, zarr-python pipeline, on the machine this was written
+# on -- note how little the ranking survives a change of shape:
+#
+#                  deep_2d (64 MB)   flat_2d (64 MB)   deep_3d (64 MB)
+#   acquire-zarr        154 ms             84 ms            115 ms
+#   ngio               1184 ms            634 ms            606 ms
+#   bioio              1358 ms           1243 ms           1131 ms
+#   ome-zarr-py        1908 ms           1915 ms           1589 ms
+#   iohub              2373 ms           2326 ms            915 ms
+#   ngff-zarr          8521 ms           4016 ms           7792 ms
+#
+# Multiply by six executions and add the spawn: ngff-zarr is ~40-55 s per case
+# and 36 of the 264, i.e. roughly half the file's wall clock on its own. Its
+# cost is also largely fixed rather than throughput-bound, so shrinking the
+# images saves less than you would expect. Every trim in this file was chosen
+# against that column; see DELIBERATELY LEFT OUT below.
+#
+# NOT EQUIVALENT — the divergences this file could not close, and did not fake.
+#
+# The aim is each writer at its best on a job that is genuinely the same job.
+# Where a library exposes a setting, this file pins it so the work matches.
+# Where it does not, the difference is recorded here rather than forced through
+# a private API, because a benchmark that reaches past a library's public
+# surface stops measuring the library.
+#
+#   codec       Pinned to `zstd` on all six specs. Four writers take it and
+#               land on it. `iohub` and `acquire-zarr` are blosc-only by public
+#               API and land on `blosc/zstd/1`; `ngff-zarr` writes `zstd/3`
+#               where the others write zstd at their own default level. On a
+#               128 MB spec that showed as stores of 112.1 MiB (ngio,
+#               ngff-zarr, ome-zarr-py), 97.8 (bioio), 89.8 (iohub) and 114.0
+#               (acquire-zarr). The `codec` and `bytes` columns say which is
+#               which on every row.
+#
+#   pyramid     `acquire-zarr` reports `differs` on every row, by construction.
+#               Its streaming writer exposes the filter and the depth but not
+#               which axes halve, so `downsample` cannot be pinned for it. It is
+#               also the fastest column in the table, and those two facts belong
+#               in the same sentence.
+#
+#   method=     Each writer's OWN default filter, and they are different
+#   default     algorithms: ngff-zarr defaults to an itkwasm gaussian, ngio to a
+#               linear zoom. Measured on `deep_3d`, that produced level shapes
+#               that match (`as asked` on both) but stores of 30.1 MiB against
+#               43.8 MiB -- a smoother filter compresses better. So the
+#               `default` rows compare each library AT ITS BEST and are NOT a
+#               like-for-like algorithm comparison. `mean` and `nearest` are the
+#               rows where every column ran the same filter. Read the
+#               `method_native` column to see what each was actually handed.
+#
+#   memory      `peak_mb` is `tracemalloc` and is NaN for `acquire-zarr`
+#               (NATIVE), which allocates outside Python. Read `proc_peak_mb`
+#               minus `rss_base_mb` for that column.
+#
+# READ THE ARTEFACT COLUMNS, NOT THE CLOCK. This is the whole discipline of this
+# suite. These libraries disagree about the downsampling filter, the default
+# chunking, the codec, and which metadata they write, so a writer that finished
+# first may not have written the same thing. `pyramid`, `codec`, `chunks`,
+# `shards` and `bytes` are read back OFF DISK rather than taken from what the
+# writer was asked for, precisely so a writer that quietly produced something
+# smaller does not look fast.
+#
+#   pyramid       Check this first. `as asked` means the level shapes match the
+#                 spec. Left to their own defaults these writers build three
+#                 different pyramids -- ngio, ome-zarr-py and bioio halve xy
+#                 only, ngff-zarr and iohub also halve z and so write half the
+#                 voxels at every level. All five are pinned to the spec's
+#                 `downsample` here. `acquire-zarr` CANNOT be pinned -- its
+#                 streaming writer exposes the filter and the depth but not the
+#                 axes -- so it reports `differs` and prints what it really
+#                 wrote. Its rows are not comparable on time; they are in the
+#                 sweep for what a streaming writer costs, not to be ranked.
+#
+#   bytes         The store on disk. A writer that is fast and small chose a
+#                 different codec; a writer that is fast and large may not have
+#                 compressed at all.
+#
+#   method_native What the writer was actually asked for, in its own vocabulary.
+#                 Worth reading whenever a `method` row surprises you -- ngio's
+#                 `coarsen` ignores its interpolation order, so it records
+#                 `coarsen/mean (order ignored)` rather than repeating back the
+#                 order it was handed.
+#
+# WHAT TO READ AGAINST WHAT.
+#
+#   a writer against itself across `pipeline`. `zarrs` replaces zarr-python's
+#                 codec pipeline process-wide, so it applies to ngio,
+#                 ome-zarr-py, bioio and ngff-zarr at once and the delta between
+#                 a writer's two rows is the pipeline and nothing else. Confirm
+#                 `codec`, `chunks` and `bytes` are unchanged before believing
+#                 the delta.
+#
+#   iohub across `implementation`. iohub is the one zarr-python writer that
+#                 declines the `pipeline` axis, because it picks its zarr stack
+#                 through its own registry -- `implementation = zarrs-python` is
+#                 its default, and is the same question asked in a second
+#                 vocabulary. Left implicit, iohub's number is partly a
+#                 measurement of zarrs.
+#
+#   ngff-zarr across `use_tensorstore`. A genuinely different write backend, not
+#                 a tuning flag. And across `scale_strategy`: `pad` downsamples
+#                 each level from the one above, `exact` reuses the images
+#                 `to_multiscales` already built -- an algorithmic difference
+#                 that should show in `pyramid` as well as in the clock.
+#
+#   acquire-zarr across `max_threads`. The only first-class thread count in the
+#                 table. Every other writer's parallelism is whatever its dask
+#                 scheduler or codec pipeline decided, which is worth remembering
+#                 before reading any single-threaded comparison here.
+#
+#   flat_2d against deep_2d. The headline geometry pair: identical 64 MB,
+#                 identical codec, identical filter, different SHAPE. Measured at
+#                 method=default, ngio is 634 ms flat against 1184 ms deep and
+#                 ngff-zarr is 4016 against 8521 -- both roughly 2x -- while
+#                 ome-zarr-py (1915 / 1908) and iohub (2326 / 2373) do not move
+#                 at all. Sampling by megabytes alone would have shown none of
+#                 this, which is why the set is built on shape.
+#
+#   deep_2d against deep_3d. Identical pixels; only `downsample` differs. Every
+#                 level past 0 is ~8x smaller in 3-D rather than ~4x, so a writer
+#                 that does not speed up here is paying for the z pass rather
+#                 than for the bytes. Measured: iohub 2373 -> 915 ms and ngio
+#                 1184 -> 606, against ngff-zarr's 8521 -> 7792.
+#
+#   ref_2d against sharded. What the shard layer costs on an otherwise identical
+#                 write.
+#
+# CONTROL: not yet measured.
+#
+#   Fill this in from your own first run and commit it. Peer libraries move; a
+#   control is how you notice one of them regressed rather than concluding
+#   something about ngio.
+#
+#   machine:  <cores, model, RAM>
+#   ngio:     <commit>
+#   peers:    <impl_version for each, off the CSV>
+#   wall:     <total>
+#
+#   writer          medium/default   pyramid    bytes    vs ngio
+#   -------------   --------------   --------   ------   -------
+#   ngio
+#   ngff-zarr
+#   ome-zarr-py
+#   bioio
+#   iohub
+#   acquire-zarr
+#
+#   Read the ratios and not the milliseconds.
+#
+# DELIBERATELY LEFT OUT:
+#
+#   [options.ngio] mode / order. This is the notable one, and it is left out
+#   because it COLLIDES with the `method` axis rather than because it is
+#   uninteresting. ngio names its downsampling by machinery and interpolation
+#   order, so `METHODS` maps the canonical names onto `(mode, order)` pairs --
+#   and an explicit `mode` overrides the machinery that mapping implied. Sweep
+#   both and `method` stops selecting anything for ngio except the order, which
+#   makes `default` and `linear` identical rows (both are `dask/linear`) and
+#   makes every `coarsen` row identical across orders, because coarsen ignores
+#   the order entirely. Three modes x two orders would be six ngio rows of which
+#   four are duplicates. The cross-library filter comparison is the more valuable
+#   axis, so `method` keeps it and ngio's machinery question stays where it is
+#   already answered properly: the `consolidate` block of the internal suite,
+#   which prices exactly those three modes with peak memory attached.
+#
+#   Anything above 128 MB. `create_pyramid` on 512 MB is ~1 minute per case once
+#   the six executions are counted, and there would be well over a hundred such
+#   cases. The 64/128 MB pairs carry the geometry question at a quarter of the
+#   cost. Raise it in a focused two-writer file if the ranking looks
+#   size-dependent -- and note the ranking already moves with SHAPE at fixed
+#   size, so test that before assuming it moves with size.
+#
+#   An uncompressed spec. `iohub` is blosc-only and declares `Unsupported` for
+#   `compressors = "none"`, so it would put a hole in the one column that most
+#   needs its three `implementation` rows intact. The codec question is answered
+#   here by pinning zstd everywhere instead -- see NOT EQUIVALENT.
+#
+#   `v2` / NGFF 0.4. A real question, but about formats rather than pyramids.
+#   `compare-io` sweeps v2 across six implementations, and `acquire-zarr` cannot
+#   write it at all, so a third of the column would be empty.
+#
+#   `[options.ngff-zarr] scale_strategy` as a sweep. Pinned to the faster value
+#   rather than dropped -- the measurement that chose it is beside the option.
+#
+#   `method_native`. It names one library's own filter directly -- iohub's
+#   median/min/max/mode, ngff-zarr's remaining `Methods` -- and is mutually
+#   exclusive with `method` (setting both is a hard config error). This file is
+#   the cross-library comparison, so it takes `method`.
+
+
+# ===========================================================================
+# Settings
+# ===========================================================================
+
+# --- the axes --------------------------------------------------------------
+
+# All six writers.
+#
+#   ngio          Image.consolidate — the subject
+#   ngff-zarr     to_multiscales / to_ngff_zarr, optionally via tensorstore
+#   ome-zarr-py   write_image — the OME project's own writer
+#   bioio         bioio-ome-zarr's writer
+#   iohub         an HCS-shaped writer, measured on a single position; py>=3.12
+#   acquire-zarr  a streaming acquisition writer; v3 only, geometry is its own
+impl = ["ngio", "ngff-zarr", "ome-zarr-py", "bioio", "iohub", "acquire-zarr"]
+
+# Six images, all defined below, and NONE of them a built-in. Two reasons, and
+# both are about making the comparison mean something.
+#
+# First, the codec. Every built-in spec is `compressors = "auto"`, which is not
+# one setting but six -- each writer picks its own -- and on identical pixels
+# that produced stores from 65 to 147 MiB in a probe of `medium`. acquire-zarr
+# wrote **uncompressed** and was 20x faster than ngio for it. A codec-blind
+# ranking is a ranking of who compressed least. All six specs pin `zstd`; see
+# NOT EQUIVALENT above for the two writers whose public API cannot take it.
+#
+# Second, bytes are not a geometry. A pyramid builder's work depends on the
+# SHAPE -- how many levels, how big each one is, how many chunks per level --
+# and two stores of the same size can be very different jobs. So the set is
+# built around pairs that hold one thing constant and vary another:
+#
+#   flat_2d   (1,  8, 2048, 2048)  64 MB  y,x    wide and shallow
+#   deep_2d   (1,128,  512,  512)  64 MB  y,x    narrow and tall -- SAME BYTES
+#   deep_3d   (1,128,  512,  512)  64 MB  z,y,x  SAME SHAPE as deep_2d
+#   ref_2d    (1, 64, 1024, 1024) 128 MB  y,x    twice the bytes, square-ish
+#   sharded   (1, 64, 1024, 1024) 128 MB  y,x    ref_2d + shards
+#   timelapse (2,  2,   16, 512, 512) 32 MB y,x  a t axis
+#
+#   flat_2d vs deep_2d   aspect at fixed bytes. Same 64 MB, but flat_2d halves
+#                        a 2048^2 plane eight times over and deep_2d halves a
+#                        512^2 plane 128 times. If a writer's cost tracked bytes
+#                        these would match; the interesting result is where they
+#                        do not.
+#   deep_2d vs deep_3d   2-D against 3-D downsampling, on identical pixels. The
+#                        3-D pyramid is ~8x smaller past level 0 because z halves
+#                        too, so a writer that is slower here is paying for the
+#                        z pass, not for the bytes.
+#   ref_2d vs deep_2d    2x the bytes, and a different aspect with it.
+#   ref_2d vs sharded    what the shard layer costs the same write.
+#
+# `v2` is out. NGFF 0.4 / zarr v2 is a real question, but it is a question about
+# formats rather than pyramids, `compare-io` already sweeps v2 across six
+# implementations, and acquire-zarr cannot write it at all.
+image = ["flat_2d", "deep_2d", "deep_3d", "ref_2d", "sharded", "timelapse"]
+
+# Every canonical filter, including the two only one or two writers have.
+#
+# This is the axis that decides whether the table compares WRITERS or FILTERS,
+# and it is wide here because the cells it cannot fill are free: a filter a
+# writer has no name for is excluded by declaration, before any child is
+# spawned, and shows up as an `unsupported` row that says so. That is a real
+# part of the comparison -- which library can express which downsampling is a
+# finding, not a gap in the sweep.
+#
+#   default   whatever the writer does when not told. Every writer has one
+#   mean      a box mean. Every writer here but bioio has one
+#   nearest   decimation. Every writer here has one
+#
+# `linear` and `gaussian` are left out, and the reason is measured rather than
+# principled. Both looked free -- a filter a writer cannot name is excluded
+# before any child spawns -- but they are only free for the writers that decline
+# them. `gaussian` is ngff-zarr's alone, and ngff-zarr is 10.5 s per run on a
+# 128 MB image against ngio's 1.4 s, so the one column that would answer it is
+# the one that cannot afford to be asked. `linear` is ngio's and ome-zarr-py's,
+# and for ngio it resolves to the same (dask, linear) call as `default`.
+method = ["default", "mean", "nearest"]
+
+# Both. `zarrs` installs the Rust codec pipeline process-wide, so it replaces
+# the encoder underneath four of these writers at once.
+#
+# Two writers decline the axis rather than answer it twice: `iohub` chooses its
+# stack through [options.iohub] implementation below, and `acquire-zarr` brings
+# its own encoder. Their non-default-pipeline cells are excluded, not measured.
+pipeline = ["zarr-python", "zarrs"]
+
+# --- measurement -----------------------------------------------------------
+
+# Three timed runs, which is what every writer's adapter declares, stated rather
+# than inherited. With one warmup and two allocation passes that is 6 runs per
+# case; `--list` prints it.
+#
+# Each timed run also clears the target first, outside the timing -- a writer
+# measured repeatedly does not otherwise repeat the same work, because the first
+# run writes into an empty directory and every later one first has to get rid of
+# the store the previous one left.
+repeats = 3
+warmup  = 1
+
+# --- output ----------------------------------------------------------------
+
+# Relative to THIS FILE. Gitignored, like every CSV under experiments/.
+csv = "full-compare-create.csv"
+
+# The source pixels are generated once by the parent and shared by every child,
+# so keeping them saves regenerating six specs (~480 MB) on the next run. The
+# written stores are not kept -- each case clears its own target before every
+# execution, which is untimed but real wall clock.
+keep = true
+
+# Suppress each environment's install output. Default: false.
+# quiet = false
+
+
+# ===========================================================================
+# Images — every spec used here is defined here
+# ===========================================================================
+#
+# All six pin `compressors = "zstd"` and `chunks = (1,1,256,256)` on the 4-D
+# specs, so that the only thing differing between two rows is the thing that row
+# is asking about. `levels = 4` throughout except `timelapse`, which has too
+# little z to halve four times.
+#
+# A note on `downsample`. It names the axes halved at each level, and it is the
+# axis the suite has to pin: left to themselves ngff-zarr and iohub halve z as
+# well as xy while ngio, ome-zarr-py and bioio halve xy only, so unpinned these
+# writers build DIFFERENT pyramids and the timings are not comparable at all.
+# Pinning it makes them comparable and makes 2-D vs 3-D a question we can ask on
+# purpose, which is what `deep_2d` / `deep_3d` are for.
+
+# Wide and shallow: eight planes of 2048x2048. Level 0 is 64 chunks per plane
+# and the pyramid is four big 2-D halvings.
+[images.flat_2d]
+shape       = [1, 8, 2048, 2048]
+chunks      = [1, 1, 256, 256]
+levels      = 4
+downsample  = ["y", "x"]
+compressors = "zstd"
+roi_size    = 512
+
+# Narrow and tall: the same 64 MB as `flat_2d`, arranged as 128 planes of
+# 512x512. Four chunks per plane, 128 times over.
+[images.deep_2d]
+shape       = [1, 128, 512, 512]
+chunks      = [1, 1, 256, 256]
+levels      = 4
+downsample  = ["y", "x"]
+compressors = "zstd"
+roi_size    = 256
+
+# Byte-identical to `deep_2d`; only `downsample` differs. z halves too, so every
+# level past 0 is ~8x smaller than its 2-D counterpart rather than ~4x.
+[images.deep_3d]
+shape       = [1, 128, 512, 512]
+chunks      = [1, 1, 256, 256]
+levels      = 4
+downsample  = ["z", "y", "x"]
+compressors = "zstd"
+roi_size    = 256
+
+# The reference geometry, and the base the sharded spec varies from.
+[images.ref_2d]
+shape       = [1, 64, 1024, 1024]
+chunks      = [1, 1, 256, 256]
+levels      = 4
+downsample  = ["y", "x"]
+compressors = "zstd"
+roi_size    = 512
+
+# `ref_2d` with a shard layer over the same chunk grid, so the delta between the
+# two is sharding and nothing else.
+[images.sharded]
+shape       = [1, 64, 1024, 1024]
+chunks      = [1, 1, 128, 128]
+shards      = [1, 4, 1024, 1024]
+levels      = 4
+downsample  = ["y", "x"]
+compressors = "zstd"
+roi_size    = 512
+
+# The only spec with a t axis, which is what makes `[options.bioio] writer =
+# "timepoints"` reachable -- it walks t in batches to bound memory.
+#
+# `c = 2` rather than 1, and that is measured rather than stylistic: at c = 1
+# iohub logs `Image has 1 channels, while the dataset has 2` on every row -- a
+# metadata bookkeeping edge case in its writer, not a real mismatch (the audit
+# still reports `as asked`). At c = 2 the warning disappears entirely.
+[images.timelapse]
+shape       = [2, 2, 16, 512, 512]     # t, c, z, y, x -- 32 MB
+chunks      = [1, 1, 1, 256, 256]
+levels      = 3
+downsample  = ["y", "x"]
+compressors = "zstd"
+roi_size    = 256
+
+
+# ===========================================================================
+# Options — one writer's own settings, swept
+# ===========================================================================
+#
+# `method` above is the vocabulary every writer shares. These are the knobs with
+# no cross-library equivalent. An option not named here keeps whatever `method`
+# implied, so the matrix stays the size it was.
+#
+# Note there is no [options.ngio]: see the header for why sweeping ngio's `mode`
+# alongside `method` produces duplicate rows rather than more information.
+
+# `use_tensorstore` is PINNED to false, and the measurement is why. It is a
+# genuinely different write backend rather than a tuning flag, so it looked like
+# a must-sweep -- but once `scale_strategy` is pinned to `exact` below, the two
+# backends land within 0.6% of each other (8710 ms against 8765 on a 128 MB
+# zstd spec). It only mattered at `scale_strategy = pad`, which this file does
+# not use: 8920 against 11138.
+#
+# `false` rather than `true` because `use_tensorstore = true` DECLINES the
+# non-default `pipeline` -- tensorstore never reaches zarr-python's codec
+# pipeline -- so pinning it true would drop ngff-zarr out of the cross-library
+# zarrs comparison entirely. Sweeping both would double the column that already
+# takes roughly half this file's wall clock, to re-measure a 0.6% difference.
+#
+# `scale_strategy` is PINNED to `exact` rather than swept, and pinned to that
+# value because it is the faster one -- this file's job is to show each writer at
+# its best, not to catch it at its worst. Measured on a 128 MB zstd image, one
+# run of `create_pyramid`:
+#
+#                        scale_strategy=pad   scale_strategy=exact
+#   use_tensorstore=false      11138 ms              8765 ms
+#   use_tensorstore=true        8920 ms              8710 ms
+#
+# `exact` reuses the arrays `to_multiscales` already built; `pad` downsamples
+# each level from the one above. Both produce `as asked` pyramids of identical
+# size, so this is a free 27% when tensorstore is off and a wash when it is on.
+# Sweeping it would double the column that already dominates this file's wall
+# clock; uncomment it if you want that finding in the CSV rather than here.
+#
+# `use_tensorstore = true` declines the non-default `pipeline`, so those cells
+# are excluded rather than measured twice.
+[options.ngff-zarr]
+use_tensorstore = [false]             # a wash at scale_strategy=exact; see above
+scale_strategy  = ["exact"]           # the faster one; see above
+# scale_strategy = ["pad", "exact"]   # to put the comparison in the CSV
+
+# Which zarr stack does the encoding. iohub's own default is `zarrs-python`,
+# the Rust pipeline, while every other writer here encodes through zarr-python.
+# Naming it explicitly is the point: left implicit, iohub's number is partly a
+# measurement of zarrs rather than of iohub.
+[options.iohub]
+implementation = ["zarr-python", "zarrs-python", "tensorstore"]
+
+# The only first-class thread count in the table. Every other writer's
+# parallelism is whatever its dask scheduler or codec pipeline decided, which is
+# worth remembering before reading `max_threads = 1` as a fair serial baseline.
+[options.acquire-zarr]
+max_threads = [1, 4, 8]
+
+# Two ways to feed the same writer. `timepoints` bounds memory by walking the t
+# axis in batches, and needs an image that HAS one -- which is what the
+# `timelapse` spec above is for. On the four 4-D images those rows are excluded
+# by declaration and cost nothing, so the option is free everywhere it does not
+# apply.
+# On the five specs with no t axis, `timepoints` raises inside the child rather
+# than being declared incompatible up front, so those ~20 rows each cost a ~3 s
+# spawn to report `unsupported`. Options are per-implementation, not per-image,
+# so there is no way to ask for it only where it applies. ~1 minute, and the
+# rows are honest capability coverage.
+[options.bioio]
+writer = ["full_volume", "timepoints"]
