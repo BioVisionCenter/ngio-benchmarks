@@ -13,13 +13,12 @@
 # installing anything, which is the only cheap way to notice that an axis was
 # widened by one value and the run just grew by twenty minutes.
 #
-# BUDGET: 216 declared per environment; 139 measured on `rc` and 75 on
-# `v1.0.0`, which cannot run `iterators`. Roughly 55-80 minutes total on an
-# 11-core laptop. The 139 is 17 + 36 + 64 + 12 + 10, and the gap up to 216 is
-# `Skip`s -- cases the blocks decline to measure, which emit no row at all
-# rather than failing. That ceiling is deliberate: the arithmetic is in the
-# case-count note above each [axes.*] table, and what was left out to reach it
-# is at the bottom of this header.
+# BUDGET: 216 declared, 139 measured, roughly 35-50 minutes on an 11-core
+# laptop. The 139 is 17 + 36 + 64 + 12 + 10, and the gap up to 216 is `Skip`s --
+# cases the blocks decline to measure and which emit no row at all, rather than
+# cases that failed. That ceiling is deliberate, not an accident of what seemed
+# interesting: the arithmetic is in the case-count note above each [axes.*]
+# table, and what was left out to reach it is at the bottom of this header.
 #
 # WHAT TO READ AGAINST WHAT. Five blocks, and none of their numbers means much
 # alone. Each block's own docstring argues its case in full; this is the map:
@@ -51,24 +50,20 @@
 #   This file ships without one on purpose. Every other committed config here
 #   carries a table of numbers from its first run, and those are worth more than
 #   they look: a re-run that misses them is how you discover the fixture changed,
-#   the machine was busy, or the branch regressed. Fill this in from your own
-#   first run and commit it -- machine, ngio commit, then the arithmetic.
+#   the machine was busy, or the version regressed. Fill this in from your own
+#   first run and commit it -- machine, ngio version, then the arithmetic.
 #
 #   machine:  <cores, model, RAM>
-#   v1.0.0:   <ngio_version / zarr off the CSV>
-#   rc:       <ngio_version / zarr off the CSV>
+#   ngio:     <version>
 #   wall:     <total>
 #
-#   Four blocks appear under both environments, so each gets a ratio. The
-#   iterators rows exist only under `rc` and are a measurement, not a comparison.
-#
-#   block         cases (rc)   v1.0.0   rc     rc/v1.0.0
-#   -----------   ----------   ------   ----   ---------
-#   algorithms            17
-#   consolidate           36
-#   layout                12
-#   roi                   10
-#   iterators             64      n/a           (rc only)
+#   block         cases   wall    what moved
+#   -----------   -----   -----   ----------------------------------------
+#   algorithms       17
+#   consolidate      36
+#   iterators        64
+#   layout           12
+#   roi              10
 #
 #   Read the ratios and not the milliseconds; everything here is
 #   machine-dependent, and the ratios are what survive a change of laptop.
@@ -141,36 +136,24 @@ csv = "full-internal.csv"
 # Environments
 # ===========================================================================
 #
-# Two entries, so every row is both a measurement and a regression check: the
-# released version, and the release candidate branch.
+# One entry, pinned to the exact release. `iterators` needs an ngio newer than
+# the `internal` extra installs -- `ThreadedMapper`, `with_halo`, `StitchConfig`,
+# `ObjectDetectionIterator` and `reduce_to_table` all postdate 1.0.0 -- so
+# without this the block degrades to a single `unavailable` row and four fifths
+# of the sweep still runs. The other four blocks are indifferent to it.
 #
-# Neither is a `local:` checkout, deliberately. A local editable install is a
-# moving target -- it changed three times while this file was being written --
-# and worse, its recorded version is wrong: the editable build stamps
-# `ngio.__version__` once and does not refresh it when you switch commits, so
-# the `ngio_version` column reports whatever was built first. Pinning the branch
-# by URL fixes that; the same commit installed this way reports
-# `1.0.2.dev50+g9146c72d2`, which actually names the commit measured.
+# Pinned by version rather than left to resolve: the `internal` extra's floor is
+# `ngio>=1.0`, which a bare install resolves to the latest *stable* release, not
+# a beta. Naming the version here also means `ngio_version` on every row records
+# the exact release measured rather than whatever the floor happened to pick up
+# that day.
 #
-# `iterators` only measures on the `rc` side. `ThreadedMapper`, `with_halo`,
-# `StitchConfig`, `ObjectDetectionIterator` and `reduce_to_table` all postdate
-# 1.0.0, so under `v1.0.0` the block degrades to a single `unavailable` row --
-# which is the designed behaviour, not a failure, and leaves the other four
-# blocks to compare across both. Those four are the regression check; the
-# iterators rows are a measurement of the branch alone.
-#
-# Pin `with = ["zarr==<version>"]` on both entries before citing any difference:
-# installing an older ngio also resolves *its* zarr, so a delta between the two
-# columns can come from zarr rather than from ngio. The CSV records the resolved
-# `zarr` on every row for exactly this reason.
+# A second entry would make every row a version comparison and double the wall
+# clock. That is a different question, and `v1-vs-worktree.toml` already asks it.
 
 [[environments]]
-name = "v1.0.0"
-ngio = "1.0.0"
-
-[[environments]]
-name = "rc"
-ngio = "git+https://github.com/BioVisionCenter/ngio@feat/peformance-optimizations"
+name = "1.1.0b3"
+ngio = "1.1.0b3"
 
 
 # ===========================================================================
