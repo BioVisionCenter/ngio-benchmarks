@@ -349,10 +349,7 @@ reject it rather than silently ignoring it, because a matrix of ngio builds
 is not what either suite reports: they compare `impl`s, and ngio is one row
 among several. Comparing ngio versions there is `[env.ngio] requires = [...]`
 (below) run once per build, with both runs appending to the same `csv` and the
-recorded `ngio_version` column telling the rows apart —
-`experiments/write-lock-v1-vs-worktree.toml` is a worked example, built to
-catch exactly the kind of write-path regression `internal`'s read-mostly
-blocks cannot see.
+recorded `ngio_version` column telling the rows apart.
 
 ## Suite 2 — `compare-io`
 
